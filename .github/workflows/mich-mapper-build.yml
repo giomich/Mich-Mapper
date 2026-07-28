@@ -1,4 +1,4 @@
-name: Mich Mapper Build
+name: Mich Mapper - Build Windows
 
 on:
   workflow_dispatch:
@@ -13,7 +13,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Crea progetto
+      - name: Crea progetto Mich Mapper
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path MichMapper | Out-Null
@@ -41,7 +41,7 @@ jobs:
           internal static class Program
           {
               [STAThread]
-              static void Main()
+              private static void Main()
               {
                   ApplicationConfiguration.Initialize();
                   Application.Run(new MainForm());
@@ -56,8 +56,9 @@ jobs:
                   StartPosition = FormStartPosition.CenterScreen;
                   Width = 900;
                   Height = 600;
+                  MinimumSize = new Size(700, 450);
 
-                  var titolo = new Label
+                  var title = new Label
                   {
                       Text = "Mich Mapper 2.0",
                       AutoSize = true,
@@ -65,15 +66,15 @@ jobs:
                       Location = new Point(35, 30)
                   };
 
-                  var testo = new Label
+                  var subtitle = new Label
                   {
-                      Text = "Prima versione Windows compilata correttamente.",
+                      Text = "Prima compilazione Windows completata correttamente.",
                       AutoSize = true,
                       Font = new Font("Segoe UI", 11),
                       Location = new Point(40, 85)
                   };
 
-                  var pulsante = new Button
+                  var button = new Button
                   {
                       Text = "Seleziona cartella PDF",
                       Width = 220,
@@ -81,26 +82,31 @@ jobs:
                       Location = new Point(40, 140)
                   };
 
-                  pulsante.Click += (_, _) =>
+                  button.Click += (_, _) =>
                   {
-                      using var dialog = new FolderBrowserDialog();
+                      using var dialog = new FolderBrowserDialog
+                      {
+                          Description = "Seleziona la cartella contenente i PDF Cerved"
+                      };
 
                       if (dialog.ShowDialog() == DialogResult.OK)
                       {
                           MessageBox.Show(
-                              "Cartella selezionata:\n" + dialog.SelectedPath,
-                              "Mich Mapper");
+                              $"Cartella selezionata:\n{dialog.SelectedPath}",
+                              "Mich Mapper",
+                              MessageBoxButtons.OK,
+                              MessageBoxIcon.Information);
                       }
                   };
 
-                  Controls.Add(titolo);
-                  Controls.Add(testo);
-                  Controls.Add(pulsante);
+                  Controls.Add(title);
+                  Controls.Add(subtitle);
+                  Controls.Add(button);
               }
           }
           '@ | Set-Content -Path MichMapper/Program.cs -Encoding UTF8
 
-      - name: Compila programma Windows
+      - name: Compila EXE portabile
         shell: pwsh
         run: |
           dotnet publish MichMapper/MichMapper.csproj `
@@ -111,9 +117,13 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o publish
 
-        - name: Carica programma
+      - name: Crea ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish/* -DestinationPath Mich-Mapper-v2.0-Test1.zip -Force
+
+      - name: Carica programma
         uses: actions/upload-artifact@v4
         with:
-          name: Mich-Mapper-v2.0-Test2
-          path: publish/
-
+          name: Mich-Mapper-v2.0-Test1
+          path: Mich-Mapper-v2.0-Test1.zip
