@@ -24,7 +24,7 @@ jobs:
       - name: Publish Mich Mapper
         shell: pwsh
         run: |
-          dotnet publish MichMapper/MichMapper.csproj `
+          dotnet publish MichMapper.csproj `
             --configuration Release `
             --runtime win-x64 `
             --self-contained true `
