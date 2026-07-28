@@ -1,9 +1,0 @@
-MICH MAPPER 2.0 PORTABLE RC1 - AVVIO COMPILAZIONE SU GITHUB
-
-Questo pacchetto contiene un solo file da inserire in GitHub Actions:
-Mich-Mapper-RC1-GitHub-Action.yml
-
-Il workflow ricostruisce il progetto sorgente, installa .NET 8 sul computer temporaneo di GitHub,
-compila l'applicazione Windows self-contained e pubblica lo ZIP testabile tra gli Artifacts.
-
-Sul PC aziendale non deve essere installato PDF24, Python, Java o .NET.
