@@ -1,1 +1,42 @@
+name: Mich Mapper - Build Windows
 
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "MichMapper/**"
+      - ".github/workflows/build.yml"
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish Mich Mapper
+        shell: pwsh
+        run: |
+          dotnet publish MichMapper/MichMapper.csproj `
+            --configuration Release `
+            --runtime win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:DebugType=None `
+            -p:DebugSymbols=false `
+            --output publish
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mich-Mapper-v3.0
+          path: publish/MichMapper.exe
+          if-no-files-found: error
