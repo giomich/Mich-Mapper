@@ -1,0 +1,129 @@
+name: Mich Mapper - Build Windows
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Installa .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Crea progetto Mich Mapper
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path MichMapper | Out-Null
+
+          @'
+          <Project Sdk="Microsoft.NET.Sdk">
+            <PropertyGroup>
+              <OutputType>WinExe</OutputType>
+              <TargetFramework>net8.0-windows</TargetFramework>
+              <UseWindowsForms>true</UseWindowsForms>
+              <ImplicitUsings>enable</ImplicitUsings>
+              <Nullable>enable</Nullable>
+              <AssemblyName>MichMapper</AssemblyName>
+            </PropertyGroup>
+          </Project>
+          '@ | Set-Content -Path MichMapper/MichMapper.csproj -Encoding UTF8
+
+          @'
+          using System;
+          using System.Drawing;
+          using System.Windows.Forms;
+
+          namespace MichMapper;
+
+          internal static class Program
+          {
+              [STAThread]
+              private static void Main()
+              {
+                  ApplicationConfiguration.Initialize();
+                  Application.Run(new MainForm());
+              }
+          }
+
+          public sealed class MainForm : Form
+          {
+              public MainForm()
+              {
+                  Text = "Mich Mapper 2.0";
+                  StartPosition = FormStartPosition.CenterScreen;
+                  Width = 900;
+                  Height = 600;
+                  MinimumSize = new Size(700, 450);
+
+                  var title = new Label
+                  {
+                      Text = "Mich Mapper 2.0",
+                      AutoSize = true,
+                      Font = new Font("Segoe UI", 22, FontStyle.Bold),
+                      Location = new Point(35, 30)
+                  };
+
+                  var subtitle = new Label
+                  {
+                      Text = "Prima compilazione Windows completata correttamente.",
+                      AutoSize = true,
+                      Font = new Font("Segoe UI", 11),
+                      Location = new Point(40, 85)
+                  };
+
+                  var button = new Button
+                  {
+                      Text = "Seleziona cartella PDF",
+                      Width = 220,
+                      Height = 45,
+                      Location = new Point(40, 140)
+                  };
+
+                  button.Click += (_, _) =>
+                  {
+                      using var dialog = new FolderBrowserDialog
+                      {
+                          Description = "Seleziona la cartella contenente i PDF Cerved"
+                      };
+
+                      if (dialog.ShowDialog() == DialogResult.OK)
+                      {
+                          MessageBox.Show(
+                              $"Cartella selezionata:\n{dialog.SelectedPath}",
+                              "Mich Mapper",
+                              MessageBoxButtons.OK,
+                              MessageBoxIcon.Information);
+                      }
+                  };
+
+                  Controls.Add(title);
+                  Controls.Add(subtitle);
+                  Controls.Add(button);
+              }
+          }
+          '@ | Set-Content -Path MichMapper/Program.cs -Encoding UTF8
+
+      - name: Compila EXE portabile
+        shell: pwsh
+        run: |
+          dotnet publish MichMapper/MichMapper.csproj `
+            -c Release `
+            -r win-x64 `
+            --self-contained true `
+            -p:PublishSingleFile=true `
+            -p:IncludeNativeLibrariesForSelfExtract=true `
+            -o publish
+
+      - name: Crea ZIP
+        shell: pwsh
+        run: |
+          Compress-Archive -Path publish/* -DestinationPath Mich-Mapper-v2.0-Test1.zip -Force
+
+      - name: Carica programma
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mich-Mapper-v2.0-Test1
+          path: Mich-Mapper-v2.0-Test1.zip
