@@ -111,16 +111,9 @@ jobs:
             -p:IncludeNativeLibrariesForSelfExtract=true `
             -o publish
 
-      - name: Crea ZIP
-        shell: pwsh
-        run: |
-          Compress-Archive `
-            -Path publish/* `
-            -DestinationPath Mich-Mapper-v2.0-Test1.zip `
-            -Force
-
-      - name: Carica ZIP
+        - name: Carica programma
         uses: actions/upload-artifact@v4
         with:
-          name: Mich-Mapper-v2.0-Test1
-          path: Mich-Mapper-v2.0-Test1.zip
+          name: Mich-Mapper-v2.0-Test2
+          path: publish/
+
