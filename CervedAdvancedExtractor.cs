@@ -248,7 +248,7 @@ internal sealed class CervedAdvancedExtractor
 
             int from = Math.Max(0, i - 16);
             int to = Math.Min(lines.Count, i + 8);
-            string[] block = lines[from..to];
+            string[] block = lines.Skip(from).Take(to - from).ToArray();
             string text = string.Join(" | ", block);
 
             Match cf = FiscalCodePattern.Match(text);
@@ -595,7 +595,7 @@ internal sealed class CervedAdvancedExtractor
             return "";
 
         int to = Math.Min(lines.Count, cfIndex + 8);
-        string[] block = lines[cfIndex..to];
+        string[] block = lines.Skip(cfIndex).Take(to - cfIndex).ToArray();
 
         return FindNominalValue(block, percentage);
     }
