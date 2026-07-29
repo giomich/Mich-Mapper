@@ -10,14 +10,13 @@ internal sealed class PdfFolderScanner
         if (!Directory.Exists(folderPath))
             throw new DirectoryNotFoundException("La cartella selezionata non esiste.");
 
-        return Directory
-            .EnumerateFiles(folderPath, "*.pdf", SearchOption.TopDirectoryOnly)
+        return Directory.EnumerateFiles(folderPath, "*.pdf", SearchOption.TopDirectoryOnly)
             .Select(path =>
             {
-                var file = new FileInfo(path);
-                return new PdfFileInfo(file.FullName, file.Name, file.Length);
+                var info = new FileInfo(path);
+                return new PdfFileInfo(info.FullName, info.Name, info.Length);
             })
-            .OrderBy(file => file.FileName, StringComparer.CurrentCultureIgnoreCase)
+            .OrderBy(x => x.FileName, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
     }
 }
