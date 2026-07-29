@@ -1,13 +1,13 @@
-# Mich Mapper 3.0
+# Mich Mapper 3.1
 
-Prima struttura definitiva del progetto .NET.
+Versione diagnostica per verificare direttamente sul PC aziendale la lettura dei PDF Cerved.
 
-La versione 3.0 consente di:
+Funzioni:
+- selezione di una cartella locale;
+- elenco dei PDF;
+- estrazione locale del testo;
+- prima individuazione di denominazione, Partita IVA, codice fiscale e attività;
+- esportazione Excel;
+- esportazione HTML di anteprima.
 
-- selezionare una cartella locale;
-- individuare i file PDF presenti nella cartella;
-- visualizzare nome e dimensione dei PDF;
-- aprire un PDF con doppio clic;
-- compilare tramite GitHub Actions un unico `MichMapper.exe` Windows x64 self-contained.
-
-La lettura dei dati Cerved e le esportazioni Excel, HTML e PowerPoint saranno sviluppate nelle versioni successive.
+Nessun dato viene inviato all'esterno.

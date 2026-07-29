@@ -7,7 +7,7 @@ internal sealed record PdfFileInfo(string FullPath, string FileName, long SizeBy
         get
         {
             double size = SizeBytes;
-            string[] units = { "B", "KB", "MB", "GB" };
+            string[] units = ["B", "KB", "MB", "GB"];
             int unit = 0;
 
             while (size >= 1024 && unit < units.Length - 1)

@@ -5,112 +5,121 @@ namespace MichMapper;
 internal sealed class MainForm : Form
 {
     private readonly PdfFolderScanner _scanner = new();
-    private readonly Button _selectFolderButton;
-    private readonly Button _clearButton;
-    private readonly Label _folderLabel;
-    private readonly Label _countLabel;
-    private readonly ListView _pdfList;
-    private readonly Label _statusLabel;
+    private readonly CervedPdfReader _reader = new();
+    private readonly ExcelExporter _excelExporter = new();
+    private readonly HtmlExporter _htmlExporter = new();
+
+    private readonly Button _selectFolderButton = new();
+    private readonly Button _analyzeButton = new();
+    private readonly Button _exportExcelButton = new();
+    private readonly Button _exportHtmlButton = new();
+    private readonly Button _clearButton = new();
+    private readonly Label _folderValueLabel = new();
+    private readonly Label _countLabel = new();
+    private readonly ListView _pdfList = new();
+    private readonly Label _statusLabel = new();
+    private readonly ProgressBar _progressBar = new();
+
+    private string? _selectedFolder;
+    private IReadOnlyList<PdfFileInfo> _pdfFiles = [];
+    private List<CompanyRecord> _records = [];
 
     public MainForm()
     {
-        Text = "Mich Mapper 3.0";
+        Text = "Mich Mapper 3.1";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(820, 560);
-        Size = new Size(1040, 720);
+        MinimumSize = new Size(900, 620);
+        Size = new Size(1120, 760);
         Font = new Font("Segoe UI", 10F);
 
-        var titleLabel = new Label
+        var title = new Label
         {
             AutoSize = true,
             Font = new Font("Segoe UI", 24F, FontStyle.Bold),
-            Text = "Mich Mapper 3.0",
-            Location = new Point(32, 24)
+            Text = "Mich Mapper 3.1",
+            Location = new Point(32, 22)
         };
 
-        var subtitleLabel = new Label
+        var subtitle = new Label
         {
             AutoSize = true,
-            Text = "Seleziona una cartella e verifica i PDF Cerved presenti.",
-            Location = new Point(36, 76)
+            Text = "Scansione e prima analisi locale dei PDF Cerved",
+            Location = new Point(36, 74)
         };
 
-        _selectFolderButton = new Button
-        {
-            Text = "Seleziona cartella PDF",
-            Location = new Point(36, 116),
-            Size = new Size(220, 44)
-        };
+        ConfigureButton(_selectFolderButton, "1. Seleziona cartella PDF", 36, 112, 220);
+        ConfigureButton(_analyzeButton, "2. Analizza PDF", 270, 112, 160);
+        ConfigureButton(_exportExcelButton, "3. Esporta Excel", 444, 112, 160);
+        ConfigureButton(_exportHtmlButton, "Esporta anteprima HTML", 618, 112, 210);
+        ConfigureButton(_clearButton, "Azzera", 842, 112, 105);
+
+        _analyzeButton.Enabled = false;
+        _exportExcelButton.Enabled = false;
+        _exportHtmlButton.Enabled = false;
+        _clearButton.Enabled = false;
+
         _selectFolderButton.Click += SelectFolderButton_Click;
-
-        _clearButton = new Button
-        {
-            Text = "Azzera",
-            Location = new Point(270, 116),
-            Size = new Size(110, 44),
-            Enabled = false
-        };
-        _clearButton.Click += ClearButton_Click;
+        _analyzeButton.Click += AnalyzeButton_Click;
+        _exportExcelButton.Click += ExportExcelButton_Click;
+        _exportHtmlButton.Click += ExportHtmlButton_Click;
+        _clearButton.Click += (_, _) => ClearResults();
 
         var folderCaption = new Label
         {
             AutoSize = true,
             Font = new Font("Segoe UI", 10F, FontStyle.Bold),
             Text = "Cartella selezionata:",
-            Location = new Point(36, 184)
+            Location = new Point(36, 176)
         };
 
-        _folderLabel = new Label
-        {
-            AutoEllipsis = true,
-            BorderStyle = BorderStyle.FixedSingle,
-            Text = "Nessuna",
-            Location = new Point(36, 210),
-            Size = new Size(950, 38),
-            Padding = new Padding(8)
-        };
+        _folderValueLabel.AutoEllipsis = true;
+        _folderValueLabel.BorderStyle = BorderStyle.FixedSingle;
+        _folderValueLabel.Text = "Nessuna";
+        _folderValueLabel.Location = new Point(36, 202);
+        _folderValueLabel.Size = new Size(1028, 38);
+        _folderValueLabel.Padding = new Padding(8);
+        _folderValueLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
-        _countLabel = new Label
-        {
-            AutoSize = true,
-            Font = new Font("Segoe UI", 11F, FontStyle.Bold),
-            Text = "PDF trovati: 0",
-            Location = new Point(36, 270)
-        };
+        _countLabel.AutoSize = true;
+        _countLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
+        _countLabel.Text = "PDF trovati: 0";
+        _countLabel.Location = new Point(36, 260);
 
-        _pdfList = new ListView
-        {
-            FullRowSelect = true,
-            GridLines = true,
-            HideSelection = false,
-            Location = new Point(36, 308),
-            Size = new Size(950, 300),
-            View = View.Details,
-            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
-        };
-        _pdfList.Columns.Add("Nome file", 730);
-        _pdfList.Columns.Add("Dimensione", 170);
+        _pdfList.FullRowSelect = true;
+        _pdfList.GridLines = true;
+        _pdfList.HideSelection = false;
+        _pdfList.Location = new Point(36, 296);
+        _pdfList.Size = new Size(1028, 350);
+        _pdfList.View = View.Details;
+        _pdfList.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
+        _pdfList.Columns.Add("Nome file", 420);
+        _pdfList.Columns.Add("Dimensione", 110);
+        _pdfList.Columns.Add("Denominazione rilevata", 280);
+        _pdfList.Columns.Add("P.IVA / CF", 180);
         _pdfList.DoubleClick += PdfList_DoubleClick;
 
-        _statusLabel = new Label
-        {
-            AutoSize = true,
-            Text = "Pronto.",
-            Location = new Point(36, 630),
-            Anchor = AnchorStyles.Bottom | AnchorStyles.Left
-        };
+        _progressBar.Location = new Point(36, 664);
+        _progressBar.Size = new Size(1028, 18);
+        _progressBar.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
 
-        Controls.Add(titleLabel);
-        Controls.Add(subtitleLabel);
-        Controls.Add(_selectFolderButton);
-        Controls.Add(_clearButton);
-        Controls.Add(folderCaption);
-        Controls.Add(_folderLabel);
-        Controls.Add(_countLabel);
-        Controls.Add(_pdfList);
-        Controls.Add(_statusLabel);
+        _statusLabel.AutoSize = true;
+        _statusLabel.Text = "Pronto.";
+        _statusLabel.Location = new Point(36, 694);
+        _statusLabel.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-        Resize += MainForm_Resize;
+        Controls.AddRange([
+            title, subtitle, _selectFolderButton, _analyzeButton,
+            _exportExcelButton, _exportHtmlButton, _clearButton,
+            folderCaption, _folderValueLabel, _countLabel,
+            _pdfList, _progressBar, _statusLabel
+        ]);
+    }
+
+    private static void ConfigureButton(Button button, string text, int x, int y, int width)
+    {
+        button.Text = text;
+        button.Location = new Point(x, y);
+        button.Size = new Size(width, 44);
     }
 
     private void SelectFolderButton_Click(object? sender, EventArgs e)
@@ -121,8 +130,10 @@ internal sealed class MainForm : Form
             ShowNewFolderButton = false
         };
 
-        if (dialog.ShowDialog(this) == DialogResult.OK)
-            LoadFolder(dialog.SelectedPath);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        LoadFolder(dialog.SelectedPath);
     }
 
     private void LoadFolder(string folderPath)
@@ -130,47 +141,137 @@ internal sealed class MainForm : Form
         try
         {
             SetBusy(true, "Lettura della cartella in corso...");
-            IReadOnlyList<PdfFileInfo> files = _scanner.Scan(folderPath);
+            _selectedFolder = folderPath;
+            _pdfFiles = _scanner.Scan(folderPath);
+            _records = [];
 
-            _pdfList.BeginUpdate();
             _pdfList.Items.Clear();
 
-            foreach (PdfFileInfo file in files)
+            foreach (PdfFileInfo file in _pdfFiles)
             {
                 var item = new ListViewItem(file.FileName) { Tag = file.FullPath };
                 item.SubItems.Add(file.SizeText);
+                item.SubItems.Add("");
+                item.SubItems.Add("");
                 _pdfList.Items.Add(item);
             }
 
-            _pdfList.EndUpdate();
-            _folderLabel.Text = folderPath;
-            _countLabel.Text = $"PDF trovati: {files.Count}";
+            _folderValueLabel.Text = folderPath;
+            _countLabel.Text = $"PDF trovati: {_pdfFiles.Count}";
+            _analyzeButton.Enabled = _pdfFiles.Count > 0;
             _clearButton.Enabled = true;
-            _statusLabel.Text = files.Count == 0
+            _exportExcelButton.Enabled = false;
+            _exportHtmlButton.Enabled = false;
+            _statusLabel.Text = _pdfFiles.Count == 0
                 ? "Nessun PDF trovato nella cartella."
-                : "Scansione completata correttamente.";
-
-            if (files.Count == 0)
-            {
-                MessageBox.Show(
-                    this,
-                    "Nella cartella selezionata non sono presenti file PDF.",
-                    "Mich Mapper 3.0",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
-            }
-        }
-        catch (UnauthorizedAccessException)
-        {
-            ShowError("Il programma non ha il permesso di leggere la cartella selezionata.");
+                : "Cartella caricata. Premi «Analizza PDF».";
         }
         catch (Exception ex)
         {
-            ShowError($"Errore durante la lettura della cartella:\n\n{ex.Message}");
+            ShowError(ex.Message);
         }
         finally
         {
             SetBusy(false, _statusLabel.Text);
+        }
+    }
+
+    private async void AnalyzeButton_Click(object? sender, EventArgs e)
+    {
+        if (_pdfFiles.Count == 0)
+            return;
+
+        SetBusy(true, "Analisi PDF in corso...");
+        _records = [];
+        _progressBar.Minimum = 0;
+        _progressBar.Maximum = _pdfFiles.Count;
+        _progressBar.Value = 0;
+
+        try
+        {
+            for (int i = 0; i < _pdfFiles.Count; i++)
+            {
+                PdfFileInfo file = _pdfFiles[i];
+                _statusLabel.Text = $"Analisi {i + 1} di {_pdfFiles.Count}: {file.FileName}";
+                Application.DoEvents();
+
+                CompanyRecord record = await Task.Run(() => _reader.Read(file.FullPath));
+                _records.Add(record);
+
+                ListViewItem item = _pdfList.Items[i];
+                item.SubItems[2].Text = record.Denominazione;
+                item.SubItems[3].Text = !string.IsNullOrWhiteSpace(record.PartitaIva)
+                    ? record.PartitaIva
+                    : record.CodiceFiscale;
+
+                _progressBar.Value = i + 1;
+            }
+
+            _exportExcelButton.Enabled = true;
+            _exportHtmlButton.Enabled = true;
+            _statusLabel.Text = $"Analisi completata: {_records.Count} PDF elaborati.";
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Errore durante l'analisi:\n\n{ex.Message}");
+        }
+        finally
+        {
+            SetBusy(false, _statusLabel.Text);
+        }
+    }
+
+    private void ExportExcelButton_Click(object? sender, EventArgs e)
+    {
+        if (_records.Count == 0)
+            return;
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Salva il file Excel",
+            Filter = "File Excel (*.xlsx)|*.xlsx",
+            FileName = $"Mich-Mapper-{DateTime.Now:yyyyMMdd-HHmm}.xlsx"
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            _excelExporter.Export(dialog.FileName, _records);
+            _statusLabel.Text = "Excel generato correttamente.";
+            OpenOutput(dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Errore durante la creazione dell'Excel:\n\n{ex.Message}");
+        }
+    }
+
+    private void ExportHtmlButton_Click(object? sender, EventArgs e)
+    {
+        if (_records.Count == 0)
+            return;
+
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Salva l'anteprima HTML",
+            Filter = "Pagina HTML (*.html)|*.html",
+            FileName = $"Mich-Mapper-Anteprima-{DateTime.Now:yyyyMMdd-HHmm}.html"
+        };
+
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            _htmlExporter.Export(dialog.FileName, _records);
+            _statusLabel.Text = "Anteprima HTML generata correttamente.";
+            OpenOutput(dialog.FileName);
+        }
+        catch (Exception ex)
+        {
+            ShowError($"Errore durante la creazione dell'HTML:\n\n{ex.Message}");
         }
     }
 
@@ -180,45 +281,44 @@ internal sealed class MainForm : Form
             return;
 
         string? path = _pdfList.SelectedItems[0].Tag as string;
-        if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
-            return;
-
-        try
-        {
-            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-        }
-        catch (Exception ex)
-        {
-            ShowError($"Non è stato possibile aprire il PDF:\n\n{ex.Message}");
-        }
+        if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+            OpenOutput(path);
     }
 
-    private void ClearButton_Click(object? sender, EventArgs e)
+    private static void OpenOutput(string path)
     {
+        Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+    }
+
+    private void ClearResults()
+    {
+        _selectedFolder = null;
+        _pdfFiles = [];
+        _records = [];
         _pdfList.Items.Clear();
-        _folderLabel.Text = "Nessuna";
+        _folderValueLabel.Text = "Nessuna";
         _countLabel.Text = "PDF trovati: 0";
+        _progressBar.Value = 0;
         _statusLabel.Text = "Pronto.";
+        _analyzeButton.Enabled = false;
+        _exportExcelButton.Enabled = false;
+        _exportHtmlButton.Enabled = false;
         _clearButton.Enabled = false;
-    }
-
-    private void MainForm_Resize(object? sender, EventArgs e)
-    {
-        int availableWidth = _pdfList.ClientSize.Width;
-        _pdfList.Columns[1].Width = 160;
-        _pdfList.Columns[0].Width = Math.Max(300, availableWidth - 165);
     }
 
     private void SetBusy(bool busy, string status)
     {
         UseWaitCursor = busy;
         _selectFolderButton.Enabled = !busy;
+        _analyzeButton.Enabled = !busy && _pdfFiles.Count > 0;
         _statusLabel.Text = status;
+        Application.DoEvents();
     }
 
     private void ShowError(string message)
     {
         _statusLabel.Text = "Operazione non completata.";
-        MessageBox.Show(this, message, "Mich Mapper 3.0", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        MessageBox.Show(this, message, "Mich Mapper 3.1",
+            MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 }

@@ -14,8 +14,8 @@ internal sealed class PdfFolderScanner
             .EnumerateFiles(folderPath, "*.pdf", SearchOption.TopDirectoryOnly)
             .Select(path =>
             {
-                var info = new FileInfo(path);
-                return new PdfFileInfo(info.FullName, info.Name, info.Length);
+                var file = new FileInfo(path);
+                return new PdfFileInfo(file.FullName, file.Name, file.Length);
             })
             .OrderBy(file => file.FileName, StringComparer.CurrentCultureIgnoreCase)
             .ToArray();
