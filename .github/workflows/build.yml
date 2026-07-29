@@ -9,13 +9,16 @@ on:
 jobs:
   build:
     runs-on: windows-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
       - name: Install .NET 8
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: "8.0.x"
+
       - name: Publish Mich Mapper
         shell: pwsh
         run: |
@@ -28,9 +31,10 @@ jobs:
             -p:DebugType=None `
             -p:DebugSymbols=false `
             --output publish
+
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
-          name: Mich-Mapper-v3.2
+          name: Mich-Mapper-v3.7
           path: publish/MichMapper.exe
           if-no-files-found: error
