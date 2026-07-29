@@ -26,7 +26,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Mich Mapper 3.1";
+        Text = "Mich Mapper 3.2";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(900, 620);
         Size = new Size(1120, 760);
@@ -36,7 +36,7 @@ internal sealed class MainForm : Form
         {
             AutoSize = true,
             Font = new Font("Segoe UI", 24F, FontStyle.Bold),
-            Text = "Mich Mapper 3.1",
+            Text = "Mich Mapper 3.2",
             Location = new Point(32, 22)
         };
 
@@ -318,7 +318,7 @@ internal sealed class MainForm : Form
     private void ShowError(string message)
     {
         _statusLabel.Text = "Operazione non completata.";
-        MessageBox.Show(this, message, "Mich Mapper 3.1",
+        MessageBox.Show(this, message, "Mich Mapper 3.2",
             MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 }

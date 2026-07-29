@@ -39,7 +39,7 @@ internal sealed class CervedPdfReader
         return new CompanyRecord
         {
             SourceFile = fileName,
-            Denominazione = ExtractDenominazione(fullText, fileName),
+            Denominazione = DenominazioneFromFileName(fileName),
             PartitaIva = MatchValue(PartitaIvaRegex, fullText),
             CodiceFiscale = MatchValue(CodiceFiscaleRegex, fullText),
             Attivita = ExtractAfterLabel(fullText,
@@ -58,26 +58,12 @@ internal sealed class CervedPdfReader
         return match.Success ? match.Groups[1].Value.Trim() : "";
     }
 
-    private static string ExtractDenominazione(string text, string fileName)
+    private static string DenominazioneFromFileName(string fileName)
     {
-        string[] labels =
-        [
-            "DENOMINAZIONE",
-            "RAGIONE SOCIALE",
-            "DATI IDENTIFICATIVI"
-        ];
-
-        foreach (string label in labels)
-        {
-            string value = ExtractAfterLabel(text, label);
-            if (!string.IsNullOrWhiteSpace(value))
-                return value;
-        }
-
-        return Path.GetFileNameWithoutExtension(fileName)
-            .Replace("_", " ")
-            .Replace("-", " ")
-            .Trim();
+        string name = Path.GetFileNameWithoutExtension(fileName);
+        name = Regex.Replace(name, @"\s*-\s*Cerved$", "", RegexOptions.IgnoreCase);
+        name = name.Replace('_', ' ').Trim();
+        return Regex.Replace(name, @"\s{2,}", " ");
     }
 
     private static string ExtractAfterLabel(string text, params string[] labels)

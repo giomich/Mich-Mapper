@@ -15,7 +15,7 @@ internal sealed class HtmlExporter
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mich Mapper 3.1 - Anteprima dati</title>
+<title>Mich Mapper 3.2 - Anteprima dati</title>
 <style>
 body{font-family:Segoe UI,Arial,sans-serif;margin:32px;background:#f4f6f8;color:#1f2937}
 h1{margin-bottom:8px}
@@ -27,7 +27,7 @@ h1{margin-bottom:8px}
 </style>
 </head>
 <body>
-<h1>Mich Mapper 3.1</h1>
+<h1>Mich Mapper 3.2</h1>
 <div class="note">Anteprima dei dati estratti localmente dai PDF.</div>
 <div class="grid">
 """);
