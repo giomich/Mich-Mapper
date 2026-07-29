@@ -32,10 +32,21 @@ internal sealed class ExcelExporter
 
         string[] headers =
         [
-            "File origine", "Tipo documento", "Denominazione/Nominativo",
-            "Cognome", "Nome", "Partita IVA", "Codice fiscale",
-            "Attività economica", "Forma giuridica", "Situazione impresa",
-            "REA", "Data costituzione", "Pagine", "Segnalibri", "Validazione"
+            "File origine",
+            "Tipo documento",
+            "Denominazione/Nominativo",
+            "Cognome",
+            "Nome",
+            "Partita IVA",
+            "Codice fiscale",
+            "Attività economica",
+            "Forma giuridica",
+            "Situazione impresa",
+            "REA",
+            "Data costituzione",
+            "Pagine",
+            "Segnalibri",
+            "Validazione"
         ];
 
         WriteHeaders(ws, headers);
@@ -43,23 +54,23 @@ internal sealed class ExcelExporter
         for (int i = 0; i < records.Count; i++)
         {
             int row = i + 2;
-            CervedRecord r = records[i];
+            CervedRecord record = records[i];
 
-            ws.Cell(row, 1).Value = r.SourceFile;
-            ws.Cell(row, 2).Value = r.DocumentType.ToString();
-            ws.Cell(row, 3).Value = r.Denominazione.Value;
-            ws.Cell(row, 4).Value = r.Cognome.Value;
-            ws.Cell(row, 5).Value = r.Nome.Value;
-            ws.Cell(row, 6).Value = r.PartitaIva.Value;
-            ws.Cell(row, 7).Value = r.CodiceFiscale.Value;
-            ws.Cell(row, 8).Value = Safe(r.AttivitaEconomica.Value);
-            ws.Cell(row, 9).Value = r.FormaGiuridica.Value;
-            ws.Cell(row, 10).Value = r.SituazioneImpresa.Value;
-            ws.Cell(row, 11).Value = r.Rea.Value;
-            ws.Cell(row, 12).Value = r.DataCostituzione.Value;
-            ws.Cell(row, 13).Value = r.PageCount;
-            ws.Cell(row, 14).Value = r.BookmarkStatus;
-            ws.Cell(row, 15).Value = r.ValidationStatus;
+            ws.Cell(row, 1).Value = record.SourceFile;
+            ws.Cell(row, 2).Value = record.DocumentType.ToString();
+            ws.Cell(row, 3).Value = record.Denominazione.Value;
+            ws.Cell(row, 4).Value = record.Cognome.Value;
+            ws.Cell(row, 5).Value = record.Nome.Value;
+            ws.Cell(row, 6).Value = record.PartitaIva.Value;
+            ws.Cell(row, 7).Value = record.CodiceFiscale.Value;
+            ws.Cell(row, 8).Value = Safe(record.AttivitaEconomica.Value);
+            ws.Cell(row, 9).Value = record.FormaGiuridica.Value;
+            ws.Cell(row, 10).Value = record.SituazioneImpresa.Value;
+            ws.Cell(row, 11).Value = record.Rea.Value;
+            ws.Cell(row, 12).Value = record.DataCostituzione.Value;
+            ws.Cell(row, 13).Value = record.PageCount;
+            ws.Cell(row, 14).Value = record.BookmarkStatus;
+            ws.Cell(row, 15).Value = record.ValidationStatus;
         }
 
         FormatSheet(ws, 55);
@@ -73,8 +84,13 @@ internal sealed class ExcelExporter
 
         string[] headers =
         [
-            "File origine", "Titolo segnalibro", "Pagina iniziale",
-            "Pagina finale", "Livello", "Percorso", "Metodo"
+            "File origine",
+            "Titolo segnalibro",
+            "Pagina iniziale",
+            "Pagina finale",
+            "Livello",
+            "Percorso",
+            "Metodo"
         ];
 
         WriteHeaders(ws, headers);
@@ -107,12 +123,9 @@ internal sealed class ExcelExporter
         string[] headers =
         [
             "File origine",
-            "Socio/Titolare",
-            "Società partecipata",
-            "CF/P.IVA socio",
-            "CF/P.IVA società",
+            "Socio",
+            "Codice fiscale/P.IVA",
             "Quota %",
-            "Valore nominale",
             "Tipo diritto",
             "Segnalibro",
             "Pagina",
@@ -129,24 +142,21 @@ internal sealed class ExcelExporter
                      _advanced.ExtractShareholders(record))
             {
                 ws.Cell(row, 1).Value = item.SourceFile;
-                ws.Cell(row, 2).Value = item.Owner;
-                ws.Cell(row, 3).Value = item.ParticipatedCompany;
-                ws.Cell(row, 4).Value = item.OwnerFiscalCode;
-                ws.Cell(row, 5).Value = item.ParticipatedCompanyFiscalCode;
-                ws.Cell(row, 6).Value = item.Percentage;
-                ws.Cell(row, 7).Value = item.NominalValue;
-                ws.Cell(row, 8).Value = item.RightType;
-                ws.Cell(row, 9).Value = item.Bookmark;
-                ws.Cell(row, 10).Value = item.Page;
-                ws.Cell(row, 11).Value = item.Method;
-                ws.Cell(row, 12).Value = Safe(item.Evidence);
+                ws.Cell(row, 2).Value = item.Shareholder;
+                ws.Cell(row, 3).Value = item.FiscalCode;
+                ws.Cell(row, 4).Value = item.Percentage;
+                ws.Cell(row, 5).Value = item.RightType;
+                ws.Cell(row, 6).Value = item.Bookmark;
+                ws.Cell(row, 7).Value = item.Page;
+                ws.Cell(row, 8).Value = item.Method;
+                ws.Cell(row, 9).Value = Safe(item.Evidence);
                 row++;
             }
         }
 
         FormatSheet(ws, 75);
-        ws.Column(12).Width = 100;
-        ws.Column(12).Style.Alignment.WrapText = true;
+        ws.Column(9).Width = 100;
+        ws.Column(9).Style.Alignment.WrapText = true;
     }
 
     private void ExportCariche(
@@ -157,8 +167,14 @@ internal sealed class ExcelExporter
 
         string[] headers =
         [
-            "File origine", "Nominativo", "Codice fiscale",
-            "Carica", "Segnalibro", "Pagina", "Metodo", "Evidenza"
+            "File origine",
+            "Nominativo",
+            "Codice fiscale",
+            "Carica",
+            "Segnalibro",
+            "Pagina",
+            "Metodo",
+            "Evidenza"
         ];
 
         WriteHeaders(ws, headers);
@@ -194,10 +210,21 @@ internal sealed class ExcelExporter
 
         string[] headers =
         [
-            "File origine", "Esercizio", "Ricavi netti",
-            "MOL/EBITDA", "Utile/Perdita esercizio",
-            "Totale attivo", "Patrimonio netto", "Cash flow",
-            "Segnalibro", "Pagina", "Metodo", "Evidenza"
+            "File origine",
+            "Esercizio",
+            "Ricavi netti",
+            "Proventi finanziari netti",
+            "Proventi finanziari lordi",
+            "Ricavi complessivi",
+            "MOL/EBITDA",
+            "Utile/Perdita esercizio",
+            "Totale attivo",
+            "Patrimonio netto",
+            "Cash flow",
+            "Segnalibro",
+            "Pagina",
+            "Metodo",
+            "Evidenza"
         ];
 
         WriteHeaders(ws, headers);
@@ -211,22 +238,25 @@ internal sealed class ExcelExporter
                 ws.Cell(row, 1).Value = item.SourceFile;
                 ws.Cell(row, 2).Value = item.Year;
                 ws.Cell(row, 3).Value = item.Revenue;
-                ws.Cell(row, 4).Value = item.Ebitda;
-                ws.Cell(row, 5).Value = item.NetIncome;
-                ws.Cell(row, 6).Value = item.TotalAssets;
-                ws.Cell(row, 7).Value = item.Equity;
-                ws.Cell(row, 8).Value = item.CashFlow;
-                ws.Cell(row, 9).Value = item.Bookmark;
-                ws.Cell(row, 10).Value = item.Page;
-                ws.Cell(row, 11).Value = item.Method;
-                ws.Cell(row, 12).Value = Safe(item.Evidence);
+                ws.Cell(row, 4).Value = item.FinancialIncomeNet;
+                ws.Cell(row, 5).Value = item.FinancialIncomeGross;
+                ws.Cell(row, 6).Value = item.TotalRevenue;
+                ws.Cell(row, 7).Value = item.Ebitda;
+                ws.Cell(row, 8).Value = item.NetIncome;
+                ws.Cell(row, 9).Value = item.TotalAssets;
+                ws.Cell(row, 10).Value = item.Equity;
+                ws.Cell(row, 11).Value = item.CashFlow;
+                ws.Cell(row, 12).Value = item.Bookmark;
+                ws.Cell(row, 13).Value = item.Page;
+                ws.Cell(row, 14).Value = item.Method;
+                ws.Cell(row, 15).Value = Safe(item.Evidence);
                 row++;
             }
         }
 
         FormatSheet(ws, 75);
-        ws.Column(12).Width = 100;
-        ws.Column(12).Style.Alignment.WrapText = true;
+        ws.Column(15).Width = 100;
+        ws.Column(15).Style.Alignment.WrapText = true;
     }
 
     private static void ExportEvidenze(
@@ -237,25 +267,49 @@ internal sealed class ExcelExporter
 
         string[] headers =
         [
-            "File origine", "Campo", "Valore", "Pagina",
-            "Affidabilità", "Metodo", "Testo sorgente"
+            "File origine",
+            "Campo",
+            "Valore",
+            "Pagina",
+            "Affidabilità",
+            "Metodo",
+            "Testo sorgente"
         ];
 
         WriteHeaders(ws, headers);
         int row = 2;
 
-        foreach (CervedRecord r in records)
+        foreach (CervedRecord record in records)
         {
-            AddEvidence(ws, ref row, r.SourceFile, "Denominazione", r.Denominazione);
-            AddEvidence(ws, ref row, r.SourceFile, "Cognome", r.Cognome);
-            AddEvidence(ws, ref row, r.SourceFile, "Nome", r.Nome);
-            AddEvidence(ws, ref row, r.SourceFile, "Partita IVA", r.PartitaIva);
-            AddEvidence(ws, ref row, r.SourceFile, "Codice fiscale", r.CodiceFiscale);
-            AddEvidence(ws, ref row, r.SourceFile, "Attività economica", r.AttivitaEconomica);
-            AddEvidence(ws, ref row, r.SourceFile, "Forma giuridica", r.FormaGiuridica);
-            AddEvidence(ws, ref row, r.SourceFile, "Situazione impresa", r.SituazioneImpresa);
-            AddEvidence(ws, ref row, r.SourceFile, "REA", r.Rea);
-            AddEvidence(ws, ref row, r.SourceFile, "Data costituzione", r.DataCostituzione);
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Denominazione", record.Denominazione);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Cognome", record.Cognome);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Nome", record.Nome);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Partita IVA", record.PartitaIva);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Codice fiscale", record.CodiceFiscale);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Attività economica", record.AttivitaEconomica);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Forma giuridica", record.FormaGiuridica);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Situazione impresa", record.SituazioneImpresa);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "REA", record.Rea);
+
+            AddEvidence(ws, ref row, record.SourceFile,
+                "Data costituzione", record.DataCostituzione);
         }
 
         FormatSheet(ws, 75);
@@ -271,7 +325,10 @@ internal sealed class ExcelExporter
 
         string[] headers =
         [
-            "File origine", "Pagina", "Parte", "Testo ricostruito"
+            "File origine",
+            "Pagina",
+            "Parte",
+            "Testo ricostruito"
         ];
 
         WriteHeaders(ws, headers);
@@ -281,7 +338,8 @@ internal sealed class ExcelExporter
         {
             foreach (PageText page in record.Pages)
             {
-                IReadOnlyList<string> chunks = Split(page.Text);
+                IReadOnlyList<string> chunks =
+                    Split(page.Text);
 
                 for (int i = 0; i < chunks.Count; i++)
                 {
@@ -315,7 +373,8 @@ internal sealed class ExcelExporter
         for (int i = 0; i < headers.Count; i++)
             ws.Cell(1, i + 1).Value = headers[i];
 
-        ws.Range(1, 1, 1, headers.Count).Style.Font.Bold = true;
+        ws.Range(1, 1, 1, headers.Count)
+            .Style.Font.Bold = true;
     }
 
     private static void AddEvidence(
@@ -338,19 +397,29 @@ internal sealed class ExcelExporter
     private static string Safe(string value) =>
         string.IsNullOrEmpty(value)
             ? ""
-            : value[..Math.Min(value.Length, SafeCellLength)];
+            : value[..Math.Min(
+                value.Length,
+                SafeCellLength)];
 
-    private static IReadOnlyList<string> Split(string text)
+    private static IReadOnlyList<string> Split(
+        string text)
     {
         if (string.IsNullOrEmpty(text))
             return [""];
 
         var result = new List<string>();
 
-        for (int i = 0; i < text.Length; i += SafeCellLength)
-            result.Add(text.Substring(
-                i,
-                Math.Min(SafeCellLength, text.Length - i)));
+        for (int i = 0;
+             i < text.Length;
+             i += SafeCellLength)
+        {
+            result.Add(
+                text.Substring(
+                    i,
+                    Math.Min(
+                        SafeCellLength,
+                        text.Length - i)));
+        }
 
         return result;
     }
