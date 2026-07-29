@@ -82,8 +82,12 @@ internal sealed class CervedPdfReader
             identificationPages,
             ["Denominazione"],
             StopLabels(),
-            allowContinuation: true,
+            allowContinuation: false,
             navigationMethod);
+
+        denomination = CleanCompanyDenomination(
+            denomination,
+            pdfPath);
 
         ExtractedField vat = FindValidatedNumber(
             identificationPages,
@@ -106,6 +110,8 @@ internal sealed class CervedPdfReader
             StopLabels(),
             allowContinuation: true,
             navigationMethod);
+
+        activity = CleanEconomicActivity(activity);
 
         ExtractedField legalForm = FindLabelValue(
             identificationPages,
@@ -192,18 +198,14 @@ internal sealed class CervedPdfReader
             ? "Segnalibro: Dati anagrafici"
             : "Fallback: prime pagine";
 
-        ExtractedField surname = FindLabelValue(
+        ExtractedField surname = FindPersonField(
             personalPages,
-            ["Cognome"],
-            ["Nome", "Luogo di nascita", "Data di nascita", "Codice Fiscale"],
-            false,
+            "Cognome",
             method);
 
-        ExtractedField name = FindLabelValue(
+        ExtractedField name = FindPersonField(
             personalPages,
-            ["Nome"],
-            ["Luogo di nascita", "Data di nascita", "Codice Fiscale"],
-            false,
+            "Nome",
             method);
 
         ExtractedField fiscalCode = FindFiscalCode(
@@ -520,6 +522,122 @@ internal sealed class CervedPdfReader
         "E-MAIL Certificata",
         "Sigla della denominazione"
     ];
+
+
+    private static ExtractedField CleanCompanyDenomination(
+        ExtractedField field,
+        string pdfPath)
+    {
+        string value = field.Value;
+
+        if (string.IsNullOrWhiteSpace(value))
+            return field;
+
+        string[] addressMarkers =
+        [
+            " BARI (", " BRINDISI (", " FASANO (", " MATERA (",
+            " MILANO (", " ROMA (", " VIA ", " PIAZZA ", " CORSO "
+        ];
+
+        int cut = addressMarkers
+            .Select(marker => value.IndexOf(
+                marker,
+                StringComparison.OrdinalIgnoreCase))
+            .Where(index => index > 0)
+            .DefaultIfEmpty(-1)
+            .Min();
+
+        if (cut > 0)
+            value = value[..cut].Trim();
+
+        if (value.Equals("LIMITATA", StringComparison.OrdinalIgnoreCase) ||
+            value.Length < 4)
+            value = NameFromFile(pdfPath);
+
+        return field with { Value = value };
+    }
+
+    private static ExtractedField CleanEconomicActivity(
+        ExtractedField field)
+    {
+        string value = field.Value;
+
+        if (string.IsNullOrWhiteSpace(value))
+            return field;
+
+        value = Regex.Replace(
+            value,
+            @"^\s*\(Rettificata\s+Cerved\s*",
+            "",
+            RegexOptions.IgnoreCase);
+
+        value = Regex.Replace(
+            value,
+            @"\s+Group\)\s*$",
+            "",
+            RegexOptions.IgnoreCase);
+
+        value = Regex.Replace(
+            value,
+            @"^\s*Attivit[aà]'\s+",
+            "",
+            RegexOptions.IgnoreCase);
+
+        value = value.Trim(' ', '(', ')');
+
+        if (value.Equals("18", StringComparison.OrdinalIgnoreCase))
+            value = "";
+
+        return field with { Value = value };
+    }
+
+    private static ExtractedField FindPersonField(
+        IReadOnlyList<PageText> pages,
+        string label,
+        string method)
+    {
+        foreach (PageText page in pages)
+        {
+            foreach (string line in Lines(page.Text))
+            {
+                Match match = Regex.Match(
+                    line,
+                    $@"^\s*{Regex.Escape(label)}\s*[:\-]?\s+(.+)$",
+                    RegexOptions.IgnoreCase);
+
+                if (!match.Success)
+                    continue;
+
+                string value = match.Groups[1].Value.Trim();
+
+                value = Regex.Replace(
+                    value,
+                    @"^(Cog(?:nome)?|Nom(?:e)?)\s+",
+                    "",
+                    RegexOptions.IgnoreCase);
+
+                value = Regex.Replace(
+                    value,
+                    @"\s+(Luogo di nascita|Data di nascita|Codice Fiscale).*$",
+                    "",
+                    RegexOptions.IgnoreCase);
+
+                if (value.Length >= 2 &&
+                    !value.Equals(label, StringComparison.OrdinalIgnoreCase) &&
+                    !value.Equals("18", StringComparison.OrdinalIgnoreCase))
+                {
+                    return new ExtractedField(
+                        value,
+                        page.Number,
+                        line,
+                        "Alta",
+                        $"{method}; campo anagrafico Cerved");
+                }
+            }
+        }
+
+        return ExtractedField.Empty($"{method}; {label}");
+    }
 
     private static string ValidateCompany(
         ExtractedField vat,

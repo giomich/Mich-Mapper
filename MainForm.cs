@@ -4,7 +4,7 @@ namespace MichMapper;
 
 internal sealed class MainForm : Form
 {
-    private const string AppVersion = "3.6.1";
+    private const string AppVersion = "3.7";
 
     private readonly PdfFolderScanner _scanner = new();
     private readonly CervedPdfReader _reader = new();
