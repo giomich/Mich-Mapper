@@ -23,6 +23,8 @@ internal sealed class CervedRecord
     public ExtractedField DataCostituzione { get; init; } = ExtractedField.Empty();
     public int PageCount { get; init; }
     public IReadOnlyList<PageText> Pages { get; init; } = [];
+    public IReadOnlyList<BookmarkSection> BookmarkSections { get; init; } = [];
+    public string BookmarkStatus { get; init; } = "";
     public string ValidationStatus { get; init; } = "";
 }
 

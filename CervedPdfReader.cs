@@ -6,6 +6,7 @@ namespace MichMapper;
 internal sealed class CervedPdfReader
 {
     private readonly CervedPageReconstructor _reconstructor = new();
+    private readonly CervedBookmarkNavigator _bookmarkNavigator = new();
 
     private static readonly Regex ElevenDigits =
         new(@"(?<!\d)\d{11}(?!\d)", RegexOptions.Compiled);
@@ -20,76 +21,119 @@ internal sealed class CervedPdfReader
             throw new FileNotFoundException("PDF non trovato.", pdfPath);
 
         var pages = new List<PageText>();
+        IReadOnlyList<BookmarkSection> bookmarkSections;
 
         using (PdfDocument document = PdfDocument.Open(pdfPath))
         {
             foreach (var page in document.GetPages())
             {
-                string reconstructed = Normalize(_reconstructor.Reconstruct(page));
+                string reconstructed = Normalize(
+                    _reconstructor.Reconstruct(page));
+
                 pages.Add(new PageText(page.Number, reconstructed));
             }
+
+            bookmarkSections = _bookmarkNavigator.ReadSections(
+                document,
+                document.NumberOfPages);
         }
 
-        string firstPages = string.Join("\n", pages.Take(3).Select(p => p.Text));
-        CervedDocumentType type = DetectType(firstPages);
+        string firstPages = string.Join(
+            "\n",
+            pages.Take(3).Select(page => page.Text));
 
-        return type switch
+        CervedDocumentType documentType = DetectType(firstPages);
+
+        return documentType switch
         {
-            CervedDocumentType.Company => ParseCompany(pdfPath, pages),
-            CervedDocumentType.Person => ParsePerson(pdfPath, pages),
-            _ => ParseUnknown(pdfPath, pages)
+            CervedDocumentType.Company =>
+                ParseCompany(pdfPath, pages, bookmarkSections),
+
+            CervedDocumentType.Person =>
+                ParsePerson(pdfPath, pages, bookmarkSections),
+
+            _ =>
+                ParseUnknown(pdfPath, pages, bookmarkSections)
         };
     }
 
-    private static CervedDocumentType DetectType(string text)
+    private CervedRecord ParseCompany(
+        string pdfPath,
+        IReadOnlyList<PageText> allPages,
+        IReadOnlyList<BookmarkSection> bookmarkSections)
     {
-        string normalized = SearchText(text);
+        IReadOnlyList<PageText> identificationPages = GetSectionPages(
+            allPages,
+            bookmarkSections,
+            ["DATI IDENTIFICATIVI & CARATTERISTICI",
+             "DATI IDENTIFICATIVI",
+             "CARATTERISTICHE"]);
 
-        if (normalized.Contains("DATIIDENTIFICATIVI&CARATTERISTICI") ||
-            normalized.Contains("PARTITAIVA") ||
-            normalized.Contains("FORMA GIURIDICA"))
-            return CervedDocumentType.Company;
+        bool bookmarkUsed = identificationPages.Count > 0;
 
-        if (normalized.Contains("DOSSIERPERSONAAPPROFONDITO") ||
-            normalized.Contains("DATIANAGRAFICI") &&
-            normalized.Contains("LUOGODINASCITA"))
-            return CervedDocumentType.Person;
+        if (!bookmarkUsed)
+            identificationPages = allPages.Take(5).ToArray();
 
-        return CervedDocumentType.Unknown;
-    }
-
-    private static CervedRecord ParseCompany(string pdfPath, IReadOnlyList<PageText> pages)
-    {
-        PageText page1 = pages.First();
+        string navigationMethod = bookmarkUsed
+            ? "Segnalibro: Dati identificativi"
+            : "Fallback: prime pagine";
 
         ExtractedField denomination = FindLabelValue(
-            pages, ["Denominazione"], StopLabels(), allowContinuation: true);
+            identificationPages,
+            ["Denominazione"],
+            StopLabels(),
+            allowContinuation: true,
+            navigationMethod);
 
         ExtractedField vat = FindValidatedNumber(
-            pages, ["Partita Iva", "Partita IVA", "P. IVA", "P.IVA"],
-            ItalianValidators.IsValidVat, "Partita IVA");
+            identificationPages,
+            ["Partita Iva", "Partita IVA", "P. IVA", "P.IVA"],
+            ItalianValidators.IsValidVat,
+            "Partita IVA",
+            navigationMethod);
 
-        ExtractedField fiscalCode = FindFiscalCode(pages, vat.Value);
+        ExtractedField fiscalCode = FindFiscalCode(
+            identificationPages,
+            vat.Value,
+            navigationMethod);
 
         ExtractedField activity = FindLabelValue(
-            pages,
-            ["Attività Economica", "Attivita Economica",
+            identificationPages,
+            ["Attività Economica",
+             "Attivita Economica",
              "Attività Economica (Rettificata Cerved Group)",
              "Attivita Economica (Rettificata Cerved Group)"],
             StopLabels(),
-            allowContinuation: true);
+            allowContinuation: true,
+            navigationMethod);
 
         ExtractedField legalForm = FindLabelValue(
-            pages, ["Forma Giuridica"], StopLabels(), allowContinuation: true);
+            identificationPages,
+            ["Forma Giuridica"],
+            StopLabels(),
+            allowContinuation: true,
+            navigationMethod);
 
         ExtractedField status = FindLabelValue(
-            pages, ["Situazione Impresa"], StopLabels(), allowContinuation: false);
+            identificationPages,
+            ["Situazione Impresa"],
+            StopLabels(),
+            allowContinuation: false,
+            navigationMethod);
 
         ExtractedField rea = FindLabelValue(
-            pages, ["CCIAA/REA", "N. REA", "N.REA"], StopLabels(), allowContinuation: false);
+            identificationPages,
+            ["CCIAA/REA", "N. REA", "N.REA"],
+            StopLabels(),
+            allowContinuation: false,
+            navigationMethod);
 
         ExtractedField incorporation = FindLabelValue(
-            pages, ["Data Costituzione"], StopLabels(), allowContinuation: false);
+            identificationPages,
+            ["Data Costituzione"],
+            StopLabels(),
+            allowContinuation: false,
+            navigationMethod);
 
         if (string.IsNullOrWhiteSpace(denomination.Value))
         {
@@ -100,8 +144,6 @@ internal sealed class CervedPdfReader
                 "Fallback",
                 "Nome file");
         }
-
-        string validation = ValidateCompany(vat, fiscalCode, denomination, activity);
 
         return new CervedRecord
         {
@@ -115,44 +157,75 @@ internal sealed class CervedPdfReader
             SituazioneImpresa = status,
             Rea = rea,
             DataCostituzione = incorporation,
-            PageCount = pages.Count,
-            Pages = pages,
-            ValidationStatus = validation
+            PageCount = allPages.Count,
+            Pages = allPages,
+            BookmarkSections = bookmarkSections,
+            BookmarkStatus = bookmarkSections.Count > 0
+                ? $"{bookmarkSections.Count} segnalibri letti"
+                : "Segnalibri non rilevati",
+            ValidationStatus = ValidateCompany(
+                vat,
+                fiscalCode,
+                denomination,
+                activity)
         };
     }
 
-    private static CervedRecord ParsePerson(string pdfPath, IReadOnlyList<PageText> pages)
+    private CervedRecord ParsePerson(
+        string pdfPath,
+        IReadOnlyList<PageText> allPages,
+        IReadOnlyList<BookmarkSection> bookmarkSections)
     {
+        IReadOnlyList<PageText> personalPages = GetSectionPages(
+            allPages,
+            bookmarkSections,
+            ["DATI ANAGRAFICI",
+             "ANAGRAFICA",
+             "DATI IDENTIFICATIVI"]);
+
+        bool bookmarkUsed = personalPages.Count > 0;
+
+        if (!bookmarkUsed)
+            personalPages = allPages.Take(5).ToArray();
+
+        string method = bookmarkUsed
+            ? "Segnalibro: Dati anagrafici"
+            : "Fallback: prime pagine";
+
         ExtractedField surname = FindLabelValue(
-            pages, ["Cognome"], ["Nome", "Luogo di nascita", "Data di nascita", "Codice Fiscale"],
-            allowContinuation: false);
+            personalPages,
+            ["Cognome"],
+            ["Nome", "Luogo di nascita", "Data di nascita", "Codice Fiscale"],
+            false,
+            method);
 
         ExtractedField name = FindLabelValue(
-            pages, ["Nome"], ["Luogo di nascita", "Data di nascita", "Codice Fiscale"],
-            allowContinuation: false);
+            personalPages,
+            ["Nome"],
+            ["Luogo di nascita", "Data di nascita", "Codice Fiscale"],
+            false,
+            method);
 
-        ExtractedField fiscalCode = FindFiscalCode(pages, "");
+        ExtractedField fiscalCode = FindFiscalCode(
+            personalPages,
+            "",
+            method);
 
-        ExtractedField denomination;
-
-        if (!string.IsNullOrWhiteSpace(surname.Value) || !string.IsNullOrWhiteSpace(name.Value))
-        {
-            denomination = new ExtractedField(
-                $"{surname.Value} {name.Value}".Trim(),
-                surname.Page > 0 ? surname.Page : name.Page,
-                $"{surname.Evidence} | {name.Evidence}".Trim(' ', '|'),
-                "Alta",
-                "Dati anagrafici Cerved");
-        }
-        else
-        {
-            denomination = new ExtractedField(
-                NameFromFile(pdfPath),
-                0,
-                "Nome del file usato come fallback.",
-                "Fallback",
-                "Nome file");
-        }
+        ExtractedField denomination =
+            !string.IsNullOrWhiteSpace(surname.Value) ||
+            !string.IsNullOrWhiteSpace(name.Value)
+                ? new ExtractedField(
+                    $"{surname.Value} {name.Value}".Trim(),
+                    surname.Page > 0 ? surname.Page : name.Page,
+                    $"{surname.Evidence} | {name.Evidence}".Trim(' ', '|'),
+                    "Alta",
+                    method)
+                : new ExtractedField(
+                    NameFromFile(pdfPath),
+                    0,
+                    "Nome del file usato come fallback.",
+                    "Fallback",
+                    "Nome file");
 
         return new CervedRecord
         {
@@ -162,36 +235,85 @@ internal sealed class CervedPdfReader
             Cognome = surname,
             Nome = name,
             CodiceFiscale = fiscalCode,
-            PageCount = pages.Count,
-            Pages = pages,
-            ValidationStatus = ItalianValidators.IsPlausibleFiscalCode(fiscalCode.Value)
-                ? "Dati persona validati"
-                : "Da verificare"
+            PageCount = allPages.Count,
+            Pages = allPages,
+            BookmarkSections = bookmarkSections,
+            BookmarkStatus = bookmarkSections.Count > 0
+                ? $"{bookmarkSections.Count} segnalibri letti"
+                : "Segnalibri non rilevati",
+            ValidationStatus =
+                ItalianValidators.IsPlausibleFiscalCode(fiscalCode.Value)
+                    ? "Dati persona validati"
+                    : "Da verificare"
         };
     }
 
-    private static CervedRecord ParseUnknown(string pdfPath, IReadOnlyList<PageText> pages)
+    private static CervedRecord ParseUnknown(
+        string pdfPath,
+        IReadOnlyList<PageText> pages,
+        IReadOnlyList<BookmarkSection> bookmarkSections)
     {
         return new CervedRecord
         {
             SourceFile = Path.GetFileName(pdfPath),
             DocumentType = CervedDocumentType.Unknown,
             Denominazione = new ExtractedField(
-                NameFromFile(pdfPath), 0, "Tipo documento non riconosciuto.",
-                "Fallback", "Nome file"),
+                NameFromFile(pdfPath),
+                0,
+                "Tipo documento non riconosciuto.",
+                "Fallback",
+                "Nome file"),
             PageCount = pages.Count,
             Pages = pages,
+            BookmarkSections = bookmarkSections,
+            BookmarkStatus = bookmarkSections.Count > 0
+                ? $"{bookmarkSections.Count} segnalibri letti"
+                : "Segnalibri non rilevati",
             ValidationStatus = "Formato Cerved non riconosciuto"
         };
+    }
+
+    private IReadOnlyList<PageText> GetSectionPages(
+        IReadOnlyList<PageText> allPages,
+        IReadOnlyList<BookmarkSection> sections,
+        string[] aliases)
+    {
+        BookmarkSection? section =
+            _bookmarkNavigator.FindBestSection(sections, aliases);
+
+        if (section is null)
+            return [];
+
+        return allPages
+            .Where(page => section.ContainsPage(page.Number))
+            .ToArray();
+    }
+
+    private static CervedDocumentType DetectType(string text)
+    {
+        string normalized = SearchText(text);
+
+        if (normalized.Contains("DATIIDENTIFICATIVI&CARATTERISTICI") ||
+            normalized.Contains("PARTITAIVA") ||
+            normalized.Contains("FORMAGIURIDICA"))
+            return CervedDocumentType.Company;
+
+        if (normalized.Contains("DOSSIERPERSONAAPPROFONDITO") ||
+            normalized.Contains("DATIANAGRAFICI") &&
+            normalized.Contains("LUOGODINASCITA"))
+            return CervedDocumentType.Person;
+
+        return CervedDocumentType.Unknown;
     }
 
     private static ExtractedField FindValidatedNumber(
         IReadOnlyList<PageText> pages,
         IReadOnlyList<string> labels,
         Func<string, bool> validator,
-        string method)
+        string method,
+        string navigationMethod)
     {
-        foreach (PageText page in pages.Take(5))
+        foreach (PageText page in pages)
         {
             string[] lines = Lines(page.Text);
 
@@ -200,154 +322,203 @@ internal sealed class CervedPdfReader
                 if (!labels.Any(label => Contains(lines[i], label)))
                     continue;
 
-                string evidence = string.Join(" | ", lines.Skip(i).Take(4));
+                string evidence = string.Join(
+                    " | ",
+                    lines.Skip(i).Take(4));
+
+                foreach (Match match in ElevenDigits.Matches(evidence))
+                {
+                    if (validator(match.Value))
+                    {
+                        return new ExtractedField(
+                            match.Value,
+                            page.Number,
+                            Limit(evidence, 500),
+                            "Alta",
+                            $"{navigationMethod}; {method}; controllo formale");
+                    }
+                }
+            }
+        }
+
+        return ExtractedField.Empty($"{navigationMethod}; {method}");
+    }
+
+    private static ExtractedField FindFiscalCode(
+        IReadOnlyList<PageText> pages,
+        string excludedVat,
+        string navigationMethod)
+    {
+        string[] labels =
+        [
+            "Codice Fiscale",
+            "Codice fiscale",
+            "C. F.",
+            "C.F."
+        ];
+
+        foreach (PageText page in pages)
+        {
+            string[] lines = Lines(page.Text);
+
+            for (int i = 0; i < lines.Length; i++)
+            {
+                if (!labels.Any(label => Contains(lines[i], label)))
+                    continue;
+
+                string evidence = string.Join(
+                    " | ",
+                    lines.Skip(i).Take(4))
+                    .ToUpperInvariant();
+
+                Match person = FiscalCode16.Match(evidence);
+
+                if (person.Success)
+                {
+                    return new ExtractedField(
+                        person.Value.ToUpperInvariant(),
+                        page.Number,
+                        Limit(evidence, 500),
+                        "Alta",
+                        $"{navigationMethod}; codice fiscale persona");
+                }
 
                 foreach (Match match in ElevenDigits.Matches(evidence))
                 {
                     string value = match.Value;
 
-                    if (validator(value))
+                    if (value == excludedVat)
                     {
                         return new ExtractedField(
-                            value, page.Number, Limit(evidence, 500),
-                            "Alta", method + " + controllo formale");
+                            value,
+                            page.Number,
+                            Limit(evidence, 500),
+                            "Alta",
+                            $"{navigationMethod}; CF impresa coincidente con P.IVA");
+                    }
+
+                    if (ItalianValidators.IsValidVat(value))
+                    {
+                        return new ExtractedField(
+                            value,
+                            page.Number,
+                            Limit(evidence, 500),
+                            "Media",
+                            $"{navigationMethod}; codice fiscale numerico");
                     }
                 }
             }
         }
 
-        return ExtractedField.Empty(method);
-    }
-
-    private static ExtractedField FindFiscalCode(
-        IReadOnlyList<PageText> pages,
-        string excludedVat)
-    {
-        string[] labels = ["Codice Fiscale", "Codice fiscale", "C. F.", "C.F."];
-
-        foreach (PageText page in pages.Take(5))
-        {
-            string[] lines = Lines(page.Text);
-
-            for (int i = 0; i < lines.Length; i++)
-            {
-                if (!labels.Any(label => Contains(lines[i], label)))
-                    continue;
-
-                string evidence = string.Join(" | ", lines.Skip(i).Take(4)).ToUpperInvariant();
-
-                Match personMatch = FiscalCode16.Match(evidence);
-                if (personMatch.Success)
-                {
-                    return new ExtractedField(
-                        personMatch.Value.ToUpperInvariant(),
-                        page.Number,
-                        Limit(evidence, 500),
-                        "Alta",
-                        "Codice fiscale persona + formato");
-                }
-
-                foreach (Match match in ElevenDigits.Matches(evidence))
-                {
-                    if (match.Value == excludedVat)
-                    {
-                        return new ExtractedField(
-                            match.Value, page.Number, Limit(evidence, 500),
-                            "Alta", "Codice fiscale impresa coincidente con P.IVA");
-                    }
-
-                    if (ItalianValidators.IsValidVat(match.Value))
-                    {
-                        return new ExtractedField(
-                            match.Value, page.Number, Limit(evidence, 500),
-                            "Media", "Codice fiscale numerico");
-                    }
-                }
-            }
-        }
-
-        return ExtractedField.Empty("Codice fiscale");
+        return ExtractedField.Empty(
+            $"{navigationMethod}; codice fiscale");
     }
 
     private static ExtractedField FindLabelValue(
         IReadOnlyList<PageText> pages,
         IReadOnlyList<string> labels,
         IReadOnlyList<string> stopLabels,
-        bool allowContinuation)
+        bool allowContinuation,
+        string navigationMethod)
     {
-        foreach (PageText page in pages.Take(5))
+        foreach (PageText page in pages)
         {
             string[] lines = Lines(page.Text);
 
             for (int i = 0; i < lines.Length; i++)
             {
                 string line = lines[i];
-                string? matchedLabel = labels.FirstOrDefault(label => Contains(line, label));
+
+                string? matchedLabel = labels.FirstOrDefault(
+                    label => Contains(line, label));
 
                 if (matchedLabel is null)
                     continue;
 
                 string value = RemoveLabel(line, matchedLabel);
 
-                if (string.IsNullOrWhiteSpace(value) && i + 1 < lines.Length)
+                if (string.IsNullOrWhiteSpace(value) &&
+                    i + 1 < lines.Length)
                     value = lines[i + 1];
 
                 var collected = new List<string>();
 
                 if (!string.IsNullOrWhiteSpace(value) &&
                     !IsStopLine(value, stopLabels))
-                {
                     collected.Add(value);
-                }
 
                 if (allowContinuation)
                 {
-                    for (int j = i + 1; j < Math.Min(i + 5, lines.Length); j++)
+                    for (int j = i + 1;
+                         j < Math.Min(i + 5, lines.Length);
+                         j++)
                     {
                         string candidate = lines[j];
 
-                        if (j == i + 1 && collected.Count > 0 && candidate == collected[0])
+                        if (j == i + 1 &&
+                            collected.Count > 0 &&
+                            candidate == collected[0])
                             continue;
 
-                        if (IsStopLine(candidate, stopLabels))
-                            break;
-
-                        if (LooksLikeSection(candidate))
+                        if (IsStopLine(candidate, stopLabels) ||
+                            LooksLikeSection(candidate))
                             break;
 
                         collected.Add(candidate);
                     }
                 }
 
-                string finalValue = Clean(string.Join(" ", collected));
+                string finalValue =
+                    Clean(string.Join(" ", collected));
 
                 if (finalValue.Length >= 2)
                 {
-                    string evidence = string.Join(" | ", lines.Skip(i).Take(Math.Min(5, lines.Length - i)));
+                    string evidence = string.Join(
+                        " | ",
+                        lines.Skip(i)
+                            .Take(Math.Min(5, lines.Length - i)));
 
                     return new ExtractedField(
                         Limit(finalValue, 600),
                         page.Number,
                         Limit(evidence, 700),
                         "Alta",
-                        "Etichetta Cerved");
+                        $"{navigationMethod}; etichetta Cerved");
                 }
             }
         }
 
-        return ExtractedField.Empty("Etichetta Cerved");
+        return ExtractedField.Empty(
+            $"{navigationMethod}; etichetta Cerved");
     }
 
     private static IReadOnlyList<string> StopLabels() =>
     [
-        "Indirizzo Sede", "Codice Fiscale", "Partita Iva", "Partita IVA",
-        "CCIAA/REA", "Forma Giuridica", "Situazione Impresa",
-        "Attività Economica", "Attivita Economica", "Impresa Appartenente",
-        "Nome Capogruppo", "Data Costituzione", "Data Iscrizione",
-        "Data Inizio Attività", "Capitale Sociale", "Totale Quote",
-        "Nr. Addetti", "Nr. Dipendenti", "Interrogazioni su Cerved Group",
-        "Nr. Uffici", "Movimentazioni R. I.", "Sito Internet",
-        "Telefono", "E-MAIL Certificata", "Sigla della denominazione"
+        "Indirizzo Sede",
+        "Codice Fiscale",
+        "Partita Iva",
+        "Partita IVA",
+        "CCIAA/REA",
+        "Forma Giuridica",
+        "Situazione Impresa",
+        "Attività Economica",
+        "Attivita Economica",
+        "Impresa Appartenente",
+        "Nome Capogruppo",
+        "Data Costituzione",
+        "Data Iscrizione",
+        "Data Inizio Attività",
+        "Capitale Sociale",
+        "Totale Quote",
+        "Nr. Addetti",
+        "Nr. Dipendenti",
+        "Interrogazioni su Cerved Group",
+        "Nr. Uffici",
+        "Movimentazioni R. I.",
+        "Sito Internet",
+        "Telefono",
+        "E-MAIL Certificata",
+        "Sigla della denominazione"
     ];
 
     private static string ValidateCompany(
@@ -358,10 +529,17 @@ internal sealed class CervedPdfReader
     {
         var missing = new List<string>();
 
-        if (string.IsNullOrWhiteSpace(denomination.Value)) missing.Add("denominazione");
-        if (!ItalianValidators.IsValidVat(vat.Value)) missing.Add("P.IVA");
-        if (!ItalianValidators.IsPlausibleFiscalCode(fiscalCode.Value)) missing.Add("CF");
-        if (string.IsNullOrWhiteSpace(activity.Value)) missing.Add("attività");
+        if (string.IsNullOrWhiteSpace(denomination.Value))
+            missing.Add("denominazione");
+
+        if (!ItalianValidators.IsValidVat(vat.Value))
+            missing.Add("P.IVA");
+
+        if (!ItalianValidators.IsPlausibleFiscalCode(fiscalCode.Value))
+            missing.Add("CF");
+
+        if (string.IsNullOrWhiteSpace(activity.Value))
+            missing.Add("attività");
 
         return missing.Count == 0
             ? "Campi identificativi validati"
@@ -369,67 +547,92 @@ internal sealed class CervedPdfReader
     }
 
     private static string[] Lines(string text) =>
-        text.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        text.Split(
+                '\n',
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries)
             .Select(Clean)
-            .Where(x => x.Length > 0)
+            .Where(value => value.Length > 0)
             .ToArray();
 
     private static string Normalize(string text) =>
-        text.Replace("\r\n", "\n").Replace('\r', '\n');
+        text.Replace("\r\n", "\n")
+            .Replace('\r', '\n');
 
     private static string SearchText(string value) =>
-        Regex.Replace(value.ToUpperInvariant(), @"\s+", "");
+        Regex.Replace(
+            value.ToUpperInvariant(),
+            @"\s+",
+            "");
 
-    private static bool Contains(string source, string value) =>
-        SearchText(source).Contains(SearchText(value), StringComparison.Ordinal);
+    private static bool Contains(
+        string source,
+        string value) =>
+        SearchText(source)
+            .Contains(
+                SearchText(value),
+                StringComparison.Ordinal);
 
-    private static string RemoveLabel(string line, string label)
+    private static string RemoveLabel(
+        string line,
+        string label)
     {
-        string normalizedLine = SearchText(line);
-        string normalizedLabel = SearchText(label);
+        string[] labelParts = label.Split(
+            ' ',
+            StringSplitOptions.RemoveEmptyEntries);
 
-        if (!normalizedLine.StartsWith(normalizedLabel, StringComparison.Ordinal))
-        {
-            int colon = line.IndexOf(':');
-            return colon >= 0 && colon < line.Length - 1
-                ? Clean(line[(colon + 1)..])
-                : "";
-        }
-
-        string[] labelParts = label.Split(' ', StringSplitOptions.RemoveEmptyEntries);
         string result = line;
 
         foreach (string part in labelParts)
         {
-            int index = result.IndexOf(part, StringComparison.OrdinalIgnoreCase);
+            int index = result.IndexOf(
+                part,
+                StringComparison.OrdinalIgnoreCase);
+
             if (index >= 0)
                 result = result.Remove(index, part.Length);
         }
 
-        return Clean(result.TrimStart(':', '-', ' '));
+        return Clean(
+            result.TrimStart(':', '-', ' '));
     }
 
-    private static bool IsStopLine(string value, IReadOnlyList<string> stopLabels) =>
+    private static bool IsStopLine(
+        string value,
+        IReadOnlyList<string> stopLabels) =>
         stopLabels.Any(label => Contains(value, label));
 
     private static bool LooksLikeSection(string value)
     {
-        string v = value.Trim();
-        return v.Length > 8 &&
-               v.All(c => !char.IsLetter(c) || char.IsUpper(c)) &&
-               !v.Any(char.IsDigit);
+        string trimmed = value.Trim();
+
+        return trimmed.Length > 8 &&
+               trimmed.All(character =>
+                   !char.IsLetter(character) ||
+                   char.IsUpper(character)) &&
+               !trimmed.Any(char.IsDigit);
     }
 
     private static string Clean(string value) =>
         Regex.Replace(value, @"\s{2,}", " ").Trim();
 
-    private static string Limit(string value, int max) =>
-        value.Length <= max ? value : value[..max];
+    private static string Limit(
+        string value,
+        int maxLength) =>
+        value.Length <= maxLength
+            ? value
+            : value[..maxLength];
 
     private static string NameFromFile(string path)
     {
         string name = Path.GetFileNameWithoutExtension(path);
-        name = Regex.Replace(name, @"\s*-\s*Cerve[vd].*$", "", RegexOptions.IgnoreCase);
+
+        name = Regex.Replace(
+            name,
+            @"\s*-\s*Cerve[vd].*$",
+            "",
+            RegexOptions.IgnoreCase);
+
         return Clean(name.Replace('_', ' '));
     }
 }
