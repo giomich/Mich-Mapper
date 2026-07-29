@@ -4,6 +4,8 @@ namespace MichMapper;
 
 internal sealed class MainForm : Form
 {
+    private const string AppVersion = "3.6";
+
     private readonly PdfFolderScanner _scanner = new();
     private readonly CervedPdfReader _reader = new();
     private readonly ExcelExporter _excelExporter = new();
@@ -25,7 +27,7 @@ internal sealed class MainForm : Form
 
     public MainForm()
     {
-        Text = "Mich Mapper 3.4 - Bookmark First";
+        Text = $"Mich Mapper {AppVersion} - Bookmark Table Parser";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(960, 640);
         Size = new Size(1220, 800);
@@ -34,55 +36,23 @@ internal sealed class MainForm : Form
         var title = new Label
         {
             AutoSize = true,
-            Font = new Font(
-                "Segoe UI",
-                24F,
-                FontStyle.Bold),
-            Text = "Mich Mapper 3.4",
+            Font = new Font("Segoe UI", 24F, FontStyle.Bold),
+            Text = $"Mich Mapper {AppVersion}",
             Location = new Point(32, 22)
         };
 
         var subtitle = new Label
         {
             AutoSize = true,
-            Text = "Motore Cerved guidato dai segnalibri PDF",
+            Text = "Lettura Cerved tramite segnalibri e tabelle standard",
             Location = new Point(36, 74)
         };
 
-        SetupButton(
-            _selectButton,
-            "1. Seleziona cartella PDF",
-            36,
-            112,
-            220);
-
-        SetupButton(
-            _analyseButton,
-            "2. Analizza Cerved",
-            270,
-            112,
-            175);
-
-        SetupButton(
-            _excelButton,
-            "3. Esporta Excel",
-            459,
-            112,
-            160);
-
-        SetupButton(
-            _htmlButton,
-            "Verifica HTML",
-            633,
-            112,
-            150);
-
-        SetupButton(
-            _clearButton,
-            "Azzera",
-            797,
-            112,
-            105);
+        SetupButton(_selectButton, "1. Seleziona cartella PDF", 36, 112, 220);
+        SetupButton(_analyseButton, "2. Analizza Cerved", 270, 112, 175);
+        SetupButton(_excelButton, "3. Esporta Excel", 459, 112, 160);
+        SetupButton(_htmlButton, "Verifica HTML", 633, 112, 150);
+        SetupButton(_clearButton, "Azzera", 797, 112, 105);
 
         _analyseButton.Enabled = false;
         _excelButton.Enabled = false;
@@ -98,10 +68,7 @@ internal sealed class MainForm : Form
         var caption = new Label
         {
             AutoSize = true,
-            Font = new Font(
-                "Segoe UI",
-                10F,
-                FontStyle.Bold),
+            Font = new Font("Segoe UI", 10F, FontStyle.Bold),
             Text = "Cartella selezionata:",
             Location = new Point(36, 176)
         };
@@ -112,16 +79,10 @@ internal sealed class MainForm : Form
         _folderLabel.Location = new Point(36, 202);
         _folderLabel.Size = new Size(1128, 38);
         _folderLabel.Padding = new Padding(8);
-        _folderLabel.Anchor =
-            AnchorStyles.Top |
-            AnchorStyles.Left |
-            AnchorStyles.Right;
+        _folderLabel.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
 
         _countLabel.AutoSize = true;
-        _countLabel.Font = new Font(
-            "Segoe UI",
-            11F,
-            FontStyle.Bold);
+        _countLabel.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
         _countLabel.Text = "PDF trovati: 0";
         _countLabel.Location = new Point(36, 260);
 
@@ -131,17 +92,12 @@ internal sealed class MainForm : Form
         _list.View = View.Details;
         _list.Location = new Point(36, 296);
         _list.Size = new Size(1128, 390);
-        _list.Anchor =
-            AnchorStyles.Top |
-            AnchorStyles.Bottom |
-            AnchorStyles.Left |
-            AnchorStyles.Right;
+        _list.Anchor = AnchorStyles.Top | AnchorStyles.Bottom |
+                       AnchorStyles.Left | AnchorStyles.Right;
 
         _list.Columns.Add("Nome file", 280);
         _list.Columns.Add("Tipo", 85);
-        _list.Columns.Add(
-            "Denominazione / nominativo",
-            245);
+        _list.Columns.Add("Denominazione / nominativo", 245);
         _list.Columns.Add("P.IVA", 115);
         _list.Columns.Add("CF", 145);
         _list.Columns.Add("Segnalibri", 145);
@@ -149,56 +105,33 @@ internal sealed class MainForm : Form
 
         _progress.Location = new Point(36, 705);
         _progress.Size = new Size(1128, 18);
-        _progress.Anchor =
-            AnchorStyles.Bottom |
-            AnchorStyles.Left |
-            AnchorStyles.Right;
+        _progress.Anchor = AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
 
         _status.AutoSize = true;
         _status.Text = "Pronto.";
         _status.Location = new Point(36, 735);
-        _status.Anchor =
-            AnchorStyles.Bottom |
-            AnchorStyles.Left;
+        _status.Anchor = AnchorStyles.Bottom | AnchorStyles.Left;
 
-        Controls.AddRange(
-        [
-            title,
-            subtitle,
-            _selectButton,
-            _analyseButton,
-            _excelButton,
-            _htmlButton,
-            _clearButton,
-            caption,
-            _folderLabel,
-            _countLabel,
-            _list,
-            _progress,
-            _status
+        Controls.AddRange([
+            title, subtitle, _selectButton, _analyseButton,
+            _excelButton, _htmlButton, _clearButton,
+            caption, _folderLabel, _countLabel, _list,
+            _progress, _status
         ]);
     }
 
-    private static void SetupButton(
-        Button button,
-        string text,
-        int x,
-        int y,
-        int width)
+    private static void SetupButton(Button button, string text, int x, int y, int width)
     {
         button.Text = text;
         button.Location = new Point(x, y);
         button.Size = new Size(width, 44);
     }
 
-    private void SelectButton_Click(
-        object? sender,
-        EventArgs e)
+    private void SelectButton_Click(object? sender, EventArgs e)
     {
         using var dialog = new FolderBrowserDialog
         {
-            Description =
-                "Seleziona la cartella contenente i dossier Cerved",
+            Description = "Seleziona la cartella contenente i dossier Cerved",
             ShowNewFolderButton = false
         };
 
@@ -213,32 +146,19 @@ internal sealed class MainForm : Form
 
             foreach (PdfFileInfo file in _files)
             {
-                var item = new ListViewItem(file.FileName)
-                {
-                    Tag = file.FullPath
-                };
-
-                item.SubItems.Add("");
-                item.SubItems.Add("");
-                item.SubItems.Add("");
-                item.SubItems.Add("");
-                item.SubItems.Add("");
-                item.SubItems.Add("");
-
+                var item = new ListViewItem(file.FileName) { Tag = file.FullPath };
+                for (int i = 0; i < 6; i++)
+                    item.SubItems.Add("");
                 _list.Items.Add(item);
             }
 
             _folderLabel.Text = dialog.SelectedPath;
-            _countLabel.Text =
-                $"PDF trovati: {_files.Count}";
-
+            _countLabel.Text = $"PDF trovati: {_files.Count}";
             _analyseButton.Enabled = _files.Count > 0;
             _clearButton.Enabled = true;
             _excelButton.Enabled = false;
             _htmlButton.Enabled = false;
-
-            _status.Text =
-                "Cartella caricata. Premi «Analizza Cerved».";
+            _status.Text = "Cartella caricata. Premi «Analizza Cerved».";
         }
         catch (Exception ex)
         {
@@ -246,9 +166,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private async void AnalyseButton_Click(
-        object? sender,
-        EventArgs e)
+    private async void AnalyseButton_Click(object? sender, EventArgs e)
     {
         if (_files.Count == 0)
             return;
@@ -264,50 +182,30 @@ internal sealed class MainForm : Form
             for (int i = 0; i < _files.Count; i++)
             {
                 PdfFileInfo file = _files[i];
-
-                _status.Text =
-                    $"Analisi {i + 1}/{_files.Count}: {file.FileName}";
-
+                _status.Text = $"Analisi {i + 1}/{_files.Count}: {file.FileName}";
                 Application.DoEvents();
 
-                CervedRecord record =
-                    await Task.Run(
-                        () => _reader.Read(file.FullPath));
-
+                CervedRecord record = await Task.Run(() => _reader.Read(file.FullPath));
                 _records.Add(record);
 
                 ListViewItem item = _list.Items[i];
-                item.SubItems[1].Text =
-                    record.DocumentType.ToString();
-
-                item.SubItems[2].Text =
-                    record.Denominazione.Value;
-
-                item.SubItems[3].Text =
-                    record.PartitaIva.Value;
-
-                item.SubItems[4].Text =
-                    record.CodiceFiscale.Value;
-
-                item.SubItems[5].Text =
-                    record.BookmarkStatus;
-
-                item.SubItems[6].Text =
-                    record.ValidationStatus;
+                item.SubItems[1].Text = record.DocumentType.ToString();
+                item.SubItems[2].Text = record.Denominazione.Value;
+                item.SubItems[3].Text = record.PartitaIva.Value;
+                item.SubItems[4].Text = record.CodiceFiscale.Value;
+                item.SubItems[5].Text = record.BookmarkStatus;
+                item.SubItems[6].Text = record.ValidationStatus;
 
                 _progress.Value = i + 1;
             }
 
             _excelButton.Enabled = true;
             _htmlButton.Enabled = true;
-
-            _status.Text =
-                $"Analisi completata: {_records.Count} dossier.";
+            _status.Text = $"Analisi completata: {_records.Count} dossier.";
         }
         catch (Exception ex)
         {
-            ShowError(
-                $"Errore durante l'analisi:\n\n{ex.Message}");
+            ShowError($"Errore durante l'analisi:\n\n{ex.Message}");
         }
         finally
         {
@@ -315,9 +213,7 @@ internal sealed class MainForm : Form
         }
     }
 
-    private void ExcelButton_Click(
-        object? sender,
-        EventArgs e)
+    private void ExcelButton_Click(object? sender, EventArgs e)
     {
         if (_records.Count == 0)
             return;
@@ -325,8 +221,7 @@ internal sealed class MainForm : Form
         using var dialog = new SaveFileDialog
         {
             Filter = "File Excel (*.xlsx)|*.xlsx",
-            FileName =
-                $"Mich-Mapper-v3.4-{DateTime.Now:yyyyMMdd-HHmm}.xlsx"
+            FileName = $"Mich-Mapper-v{AppVersion}-{DateTime.Now:yyyyMMdd-HHmm}.xlsx"
         };
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -334,24 +229,17 @@ internal sealed class MainForm : Form
 
         try
         {
-            _excelExporter.Export(
-                dialog.FileName,
-                _records);
-
+            _excelExporter.Export(dialog.FileName, _records);
             Open(dialog.FileName);
-            _status.Text =
-                "Excel creato correttamente.";
+            _status.Text = $"Excel v{AppVersion} creato correttamente.";
         }
         catch (Exception ex)
         {
-            ShowError(
-                $"Errore nella creazione dell'Excel:\n\n{ex.Message}");
+            ShowError($"Errore nella creazione dell'Excel:\n\n{ex.Message}");
         }
     }
 
-    private void HtmlButton_Click(
-        object? sender,
-        EventArgs e)
+    private void HtmlButton_Click(object? sender, EventArgs e)
     {
         if (_records.Count == 0)
             return;
@@ -359,8 +247,7 @@ internal sealed class MainForm : Form
         using var dialog = new SaveFileDialog
         {
             Filter = "Pagina HTML (*.html)|*.html",
-            FileName =
-                $"Mich-Mapper-v3.4-Verifica-{DateTime.Now:yyyyMMdd-HHmm}.html"
+            FileName = $"Mich-Mapper-v{AppVersion}-Verifica-{DateTime.Now:yyyyMMdd-HHmm}.html"
         };
 
         if (dialog.ShowDialog(this) != DialogResult.OK)
@@ -368,25 +255,17 @@ internal sealed class MainForm : Form
 
         try
         {
-            _htmlExporter.Export(
-                dialog.FileName,
-                _records);
-
+            _htmlExporter.Export(dialog.FileName, _records);
             Open(dialog.FileName);
         }
         catch (Exception ex)
         {
-            ShowError(
-                $"Errore nella creazione dell'HTML:\n\n{ex.Message}");
+            ShowError($"Errore nella creazione dell'HTML:\n\n{ex.Message}");
         }
     }
 
     private static void Open(string path) =>
-        Process.Start(
-            new ProcessStartInfo(path)
-            {
-                UseShellExecute = true
-            });
+        Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
 
     private void ClearAll()
     {
@@ -407,19 +286,17 @@ internal sealed class MainForm : Form
     {
         UseWaitCursor = busy;
         _selectButton.Enabled = !busy;
-        _analyseButton.Enabled =
-            !busy && _files.Count > 0;
+        _analyseButton.Enabled = !busy && _files.Count > 0;
         Application.DoEvents();
     }
 
     private void ShowError(string message)
     {
         _status.Text = "Operazione non completata.";
-
         MessageBox.Show(
             this,
             message,
-            "Mich Mapper 3.4",
+            $"Mich Mapper {AppVersion}",
             MessageBoxButtons.OK,
             MessageBoxIcon.Error);
     }

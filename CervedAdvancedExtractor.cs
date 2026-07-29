@@ -44,487 +44,442 @@ internal sealed class CervedAdvancedExtractor
 {
     private readonly CervedBookmarkNavigator _navigator = new();
 
-    private static readonly Regex PersonFiscalCode =
-        new(@"\b[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]\b",
+    private static readonly Regex FiscalCodePattern =
+        new(@"\b(?:[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]|\d{11})\b",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-    private static readonly Regex NumericFiscalCode =
-        new(@"(?<!\d)\d{11}(?!\d)", RegexOptions.Compiled);
-
-    private static readonly Regex Percentage =
+    private static readonly Regex PercentagePattern =
         new(@"(?<!\d)(\d{1,3}(?:[\,\.]\d+)?)\s*%",
             RegexOptions.Compiled);
 
-    private static readonly Regex QuotaValue =
-        new(@"(?:QUOTA|VALORE NOMINALE)\s*:\s*([\d\.\,]+)",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+    private static readonly Regex MoneyPattern =
+        new(@"(?<!\d)(\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)(?!\d)",
+            RegexOptions.Compiled);
 
-    private static readonly Regex ParticipationStart =
-        new(@"^\s*(\d+)\.\s+(.+)$", RegexOptions.Compiled);
+    private static readonly Regex NumberedCompanyPattern =
+        new(@"^\s*\d+\.\s+(.+)$", RegexOptions.Compiled);
 
-    private static readonly Regex YearDate =
+    private static readonly Regex YearPattern =
         new(@"\b31/12/(20\d{2})\b", RegexOptions.Compiled);
 
-    public IReadOnlyList<ShareholderRow> ExtractShareholders(
-        CervedRecord record)
+    public IReadOnlyList<ShareholderRow> ExtractShareholders(CervedRecord record)
     {
         return record.DocumentType switch
         {
-            CervedDocumentType.Company =>
-                ExtractCompanyShareholders(record),
-
-            CervedDocumentType.Person =>
-                ExtractPersonParticipations(record),
-
+            CervedDocumentType.Company => ExtractCompanyOwners(record),
+            CervedDocumentType.Person => ExtractPersonParticipations(record),
             _ => []
         };
     }
 
-    private IReadOnlyList<ShareholderRow> ExtractCompanyShareholders(
-        CervedRecord record)
+    private IReadOnlyList<ShareholderRow> ExtractCompanyOwners(CervedRecord record)
     {
-        BookmarkSection? bookmark =
-            FindExactPreferredBookmark(
-                record.BookmarkSections,
-                "SOCI");
+        BookmarkSection? bookmark = FindBookmark(
+            record.BookmarkSections,
+            ["SOCI"],
+            excludedTitles:
+            [
+                "PARTECIPAZIONI DA ARCHIVIO SOCI",
+                "PARTECIPAZIONI RISULTANTI DA BILANCIO",
+                "SOCI - CARICHE"
+            ]);
 
         if (bookmark is null)
             return [];
 
-        IReadOnlyList<PageText> pages =
-            PagesInside(record, bookmark);
+        IReadOnlyList<PageText> pages = PagesInside(record, bookmark);
+        string[] lines = Lines(string.Join("\n", pages.Select(x => x.Text)));
+
+        int tableStart = FindLine(lines, "SOCIO O BENEFICIARIO");
+        if (tableStart < 0)
+            tableStart = FindLine(lines, "TIPO DIRITTO");
+        if (tableStart < 0)
+            tableStart = 0;
+
+        int tableEnd = FindFirstLineAfter(
+            lines,
+            tableStart,
+            [
+                "PARTECIPAZIONI DA ARCHIVIO SOCI",
+                "PARTECIPAZIONI RISULTANTI DA BILANCIO",
+                "INFORMAZIONI IMMOBILIARI",
+                "SOCI - CARICHE"
+            ]);
+
+        if (tableEnd < 0)
+            tableEnd = lines.Length;
+
+        string[] table = lines[tableStart..tableEnd];
+
+        List<string> fiscalCodes = table
+            .SelectMany(line => FiscalCodePattern.Matches(line).Select(m => m.Value.ToUpperInvariant()))
+            .Where(cf => cf != record.CodiceFiscale.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        List<string> percentages = table
+            .SelectMany(line => PercentagePattern.Matches(line).Select(m => m.Groups[1].Value))
+            .ToList();
+
+        List<string> rights = ExtractRights(table);
+        List<string> names = ExtractOwnerNames(table);
 
         var rows = new List<ShareholderRow>();
 
-        foreach (PageText page in pages)
+        int baseCount = Math.Min(
+            fiscalCodes.Count,
+            Math.Min(names.Count, percentages.Count));
+
+        for (int i = 0; i < baseCount; i++)
         {
-            string[] lines = Lines(page.Text);
-            int index = 0;
+            string right = i < rights.Count ? rights[i] : "";
+            string nominal = FindNominalValueNear(table, fiscalCodes[i], percentages[i]);
 
-            while (index < lines.Length)
+            rows.Add(NewOwnerRow(
+                record,
+                bookmark,
+                pages,
+                names[i],
+                fiscalCodes[i],
+                percentages[i],
+                nominal,
+                right,
+                table,
+                "Segnalibro SOCI + allineamento colonne Cerved"));
+        }
+
+        // Gestione delle righe aggiuntive di usufrutto/nuda proprietà.
+        // Cerved può riportare una seconda serie di nominativi e percentuali
+        // dopo le righe principali della tabella.
+        if (percentages.Count > baseCount && names.Count > baseCount)
+        {
+            int extraCount = Math.Min(
+                percentages.Count - baseCount,
+                names.Count - baseCount);
+
+            for (int i = 0; i < extraCount; i++)
             {
-                int blockStart = FindCompanyShareholderStart(lines, index);
+                int index = baseCount + i;
+                string name = names[index];
+                string percentage = percentages[index];
+                string right = index < rights.Count ? rights[index] : "";
 
-                if (blockStart < 0)
-                    break;
+                string fiscalCode = ResolveFiscalCodeByName(
+                    name,
+                    names,
+                    fiscalCodes);
 
-                int blockEnd = FindNextCompanyShareholderStart(
-                    lines,
-                    blockStart + 1);
-
-                if (blockEnd < 0)
-                    blockEnd = lines.Length;
-
-                string[] block = lines[blockStart..blockEnd];
-                ShareholderRow? parsed =
-                    ParseCompanyShareholderBlock(
-                        record,
-                        bookmark,
-                        page.Number,
-                        block);
-
-                if (parsed is not null)
-                    rows.Add(parsed);
-
-                index = Math.Max(blockEnd, blockStart + 1);
+                rows.Add(NewOwnerRow(
+                    record,
+                    bookmark,
+                    pages,
+                    name,
+                    fiscalCode,
+                    percentage,
+                    "",
+                    right,
+                    table,
+                    "Segnalibro SOCI + diritto aggiuntivo Cerved"));
             }
         }
 
+        // Fallback per società con socio unico: se la tabella testuale viene
+        // ricostruita in ordine diverso, cerca comunque il blocco con 100%.
+        if (rows.Count == 0)
+        {
+            rows.AddRange(ParseSimpleCompanyOwnerBlocks(
+                record,
+                bookmark,
+                pages,
+                table));
+        }
+
         return rows
-            .Where(row =>
-                !string.IsNullOrWhiteSpace(row.Owner) &&
-                (!string.IsNullOrWhiteSpace(row.Percentage) ||
-                 !string.IsNullOrWhiteSpace(row.NominalValue)))
+            .Where(x =>
+                !string.IsNullOrWhiteSpace(x.Owner) &&
+                !string.IsNullOrWhiteSpace(x.Percentage))
             .GroupBy(
-                row =>
-                    $"{Normalize(row.Owner)}|{row.OwnerFiscalCode}|{row.Percentage}|{Normalize(row.RightType)}",
+                x => $"{Normalize(x.Owner)}|{x.OwnerFiscalCode}|{x.Percentage}|{Normalize(x.RightType)}",
                 StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
+            .Select(g => g.First())
             .ToArray();
     }
 
-    private static ShareholderRow? ParseCompanyShareholderBlock(
+    private static ShareholderRow NewOwnerRow(
         CervedRecord record,
         BookmarkSection bookmark,
-        int page,
-        IReadOnlyList<string> block)
+        IReadOnlyList<PageText> pages,
+        string owner,
+        string ownerFiscalCode,
+        string percentage,
+        string nominalValue,
+        string rightType,
+        IReadOnlyList<string> evidenceLines,
+        string method)
     {
-        string evidence = string.Join(" | ", block);
-
-        string fiscalCode = FindFiscalCodeNearLabel(evidence);
-
-        Match percentageMatch = Regex.Match(
-            evidence,
-            @"PERCENTUALE\s*:\s*(\d{1,3}(?:[\,\.]\d+)?)\s*%",
-            RegexOptions.IgnoreCase);
-
-        Match quotaMatch = Regex.Match(
-            evidence,
-            @"QUOTA\s*:\s*([\d\.\,]+)",
-            RegexOptions.IgnoreCase);
-
-        string rightType = FindRightType(evidence);
-
-        string owner = ExtractCompanyShareholderName(
-            block,
-            evidence,
-            fiscalCode);
-
-        if (string.IsNullOrWhiteSpace(owner))
-            return null;
-
         return new ShareholderRow(
             record.SourceFile,
-            owner,
+            CleanOwnerName(owner),
             record.Denominazione.Value,
-            fiscalCode,
+            ownerFiscalCode,
             record.CodiceFiscale.Value,
-            percentageMatch.Success
-                ? percentageMatch.Groups[1].Value
-                : "",
-            quotaMatch.Success
-                ? quotaMatch.Groups[1].Value
-                : "",
+            percentage,
+            nominalValue,
             rightType,
             bookmark.Title,
-            page,
-            Limit(evidence, 1800),
-            "Segnalibro Soci + blocco standard Cerved");
+            pages.FirstOrDefault()?.Number ?? bookmark.StartPage,
+            Limit(string.Join(" | ", evidenceLines), 2200),
+            method);
     }
 
-    private IReadOnlyList<ShareholderRow> ExtractPersonParticipations(
-        CervedRecord record)
+    private static IReadOnlyList<ShareholderRow> ParseSimpleCompanyOwnerBlocks(
+        CervedRecord record,
+        BookmarkSection bookmark,
+        IReadOnlyList<PageText> pages,
+        IReadOnlyList<string> lines)
     {
-        BookmarkSection? bookmark =
-            FindExactPreferredBookmark(
-                record.BookmarkSections,
-                "PARTECIPAZIONI");
+        var result = new List<ShareholderRow>();
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            Match percentage = PercentagePattern.Match(lines[i]);
+            if (!percentage.Success)
+                continue;
+
+            int from = Math.Max(0, i - 16);
+            int to = Math.Min(lines.Count, i + 8);
+            string[] block = lines[from..to];
+            string text = string.Join(" | ", block);
+
+            Match cf = FiscalCodePattern.Match(text);
+            string owner = FindBestOwnerName(block);
+
+            if (string.IsNullOrWhiteSpace(owner))
+                continue;
+
+            result.Add(NewOwnerRow(
+                record,
+                bookmark,
+                pages,
+                owner,
+                cf.Success ? cf.Value.ToUpperInvariant() : "",
+                percentage.Groups[1].Value,
+                FindNominalValue(block),
+                FindRight(text),
+                block,
+                "Segnalibro SOCI + fallback blocco quota"));
+        }
+
+        return result;
+    }
+
+    private IReadOnlyList<ShareholderRow> ExtractPersonParticipations(CervedRecord record)
+    {
+        BookmarkSection? bookmark = FindBookmark(
+            record.BookmarkSections,
+            ["PARTECIPAZIONI"],
+            excludedTitles:
+            [
+                "PARTECIPAZIONI DA ARCHIVIO SOCI",
+                "PARTECIPAZIONI RISULTANTI DA BILANCIO"
+            ]);
 
         if (bookmark is null)
             return [];
 
-        IReadOnlyList<PageText> pages =
-            PagesInside(record, bookmark);
-
+        IReadOnlyList<PageText> pages = PagesInside(record, bookmark);
+        string[] lines = Lines(string.Join("\n", pages.Select(x => x.Text)));
         var rows = new List<ShareholderRow>();
 
-        foreach (PageText page in pages)
+        for (int i = 0; i < lines.Length; i++)
         {
-            string[] lines = Lines(page.Text);
+            Match companyStart = NumberedCompanyPattern.Match(lines[i]);
 
-            for (int i = 0; i < lines.Length; i++)
+            if (!companyStart.Success)
+                continue;
+
+            int end = i + 1;
+            while (end < lines.Length &&
+                   !NumberedCompanyPattern.IsMatch(lines[end]))
+                end++;
+
+            string[] block = lines[i..end];
+            string evidence = string.Join(" | ", block);
+
+            string company = BuildCompanyName(block, companyStart.Groups[1].Value);
+            string companyCf = FindLabelledFiscalCode(evidence);
+            Match percentage = PercentagePattern.Match(evidence);
+
+            if (string.IsNullOrWhiteSpace(company) || !percentage.Success)
             {
-                Match start = ParticipationStart.Match(lines[i]);
-
-                if (!start.Success)
-                    continue;
-
-                int end = i + 1;
-
-                while (end < lines.Length &&
-                       !ParticipationStart.IsMatch(lines[end]))
-                    end++;
-
-                string[] block = lines[i..end];
-
-                rows.AddRange(
-                    ParsePersonParticipationBlock(
-                        record,
-                        bookmark,
-                        page.Number,
-                        block));
-
                 i = end - 1;
+                continue;
+            }
+
+            rows.Add(new ShareholderRow(
+                record.SourceFile,
+                record.Denominazione.Value,
+                company,
+                record.CodiceFiscale.Value,
+                companyCf,
+                percentage.Groups[1].Value,
+                FindNominalValue(block),
+                FindRight(evidence),
+                bookmark.Title,
+                pages.FirstOrDefault(p => p.Text.Contains(lines[i]))?.Number
+                    ?? bookmark.StartPage,
+                Limit(evidence, 1800),
+                "Segnalibro PARTECIPAZIONI + blocco società numerato"));
+
+            i = end - 1;
+        }
+
+        return rows
+            .GroupBy(
+                x => $"{Normalize(x.Owner)}|{Normalize(x.ParticipatedCompany)}|{x.Percentage}|{Normalize(x.RightType)}",
+                StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToArray();
+    }
+
+    public IReadOnlyList<OfficerRow> ExtractOfficers(CervedRecord record)
+    {
+        BookmarkSection? bookmark = FindBookmark(
+            record.BookmarkSections,
+            ["TITOLARI DI CARICHE O QUALIFICHE", "CARICHE / QUALIFICHE"],
+            excludedTitles: []);
+
+        if (bookmark is null)
+            return [];
+
+        IReadOnlyList<PageText> pages = PagesInside(record, bookmark);
+        string[] lines = Lines(string.Join("\n", pages.Select(x => x.Text)));
+        var rows = new List<OfficerRow>();
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            Match cf = FiscalCodePattern.Match(lines[i]);
+            if (!cf.Success || cf.Value.All(char.IsDigit))
+                continue;
+
+            string name = FindPersonNameBefore(lines, i);
+            if (string.IsNullOrWhiteSpace(name))
+                continue;
+
+            int end = Math.Min(lines.Length, i + 14);
+            string[] block = lines[Math.Max(0, i - 3)..end];
+
+            foreach (string role in ExtractRoles(block))
+            {
+                rows.Add(new OfficerRow(
+                    record.SourceFile,
+                    name,
+                    cf.Value.ToUpperInvariant(),
+                    role,
+                    bookmark.Title,
+                    pages.FirstOrDefault()?.Number ?? bookmark.StartPage,
+                    Limit(string.Join(" | ", block), 1400),
+                    "Segnalibro CARICHE + blocco nominativo"));
             }
         }
 
         return rows
-            .Where(row =>
-                !string.IsNullOrWhiteSpace(row.ParticipatedCompany) &&
-                !string.IsNullOrWhiteSpace(row.Percentage))
             .GroupBy(
-                row =>
-                    $"{Normalize(row.ParticipatedCompany)}|{row.ParticipatedCompanyFiscalCode}|{row.Percentage}|{Normalize(row.RightType)}",
+                x => $"{Normalize(x.Name)}|{Normalize(x.Role)}",
                 StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
+            .Select(g => g.First())
             .ToArray();
     }
 
-    private static IReadOnlyList<ShareholderRow>
-        ParsePersonParticipationBlock(
-            CervedRecord record,
-            BookmarkSection bookmark,
-            int page,
-            IReadOnlyList<string> block)
-    {
-        string evidence = string.Join(" | ", block);
-
-        Match firstLine =
-            ParticipationStart.Match(block[0]);
-
-        string company =
-            firstLine.Success
-                ? firstLine.Groups[2].Value.Trim()
-                : block[0].Trim();
-
-        company = ExtendCompanyName(block, company);
-
-        string companyFiscalCode =
-            FindFiscalCodeNearLabel(evidence);
-
-        var rights = new List<(string Percentage, string Value, string Right)>();
-
-        foreach (string line in block)
-        {
-            Match percentageMatch = Percentage.Match(line);
-
-            if (!percentageMatch.Success)
-                continue;
-
-            string right = FindRightType(line);
-
-            if (string.IsNullOrWhiteSpace(right))
-                right = FindRightType(evidence);
-
-            string nominal = ExtractNominalValueFromParticipationLine(line);
-
-            rights.Add((
-                percentageMatch.Groups[1].Value,
-                nominal,
-                right));
-        }
-
-        if (rights.Count == 0)
-            return [];
-
-        return rights
-            .Select(right =>
-                new ShareholderRow(
-                    record.SourceFile,
-                    record.Denominazione.Value,
-                    company,
-                    record.CodiceFiscale.Value,
-                    companyFiscalCode,
-                    right.Percentage,
-                    right.Value,
-                    right.Right,
-                    bookmark.Title,
-                    page,
-                    Limit(evidence, 1800),
-                    "Segnalibro Partecipazioni + blocco numerato Cerved"))
-            .ToArray();
-    }
-
-    public IReadOnlyList<OfficerRow> ExtractOfficers(
-        CervedRecord record)
-    {
-        string[] aliases =
-        [
-            "TITOLARI DI CARICHE O QUALIFICHE",
-            "CARICHE/QUALIFICHE",
-            "CARICHE"
-        ];
-
-        BookmarkSection? bookmark =
-            _navigator.FindBestSection(
-                record.BookmarkSections,
-                aliases);
-
-        if (bookmark is null)
-            return [];
-
-        IReadOnlyList<PageText> pages =
-            PagesInside(record, bookmark);
-
-        var result = new List<OfficerRow>();
-
-        foreach (PageText page in pages)
-        {
-            string[] lines = Lines(page.Text);
-
-            for (int i = 0; i < lines.Length; i++)
-            {
-                if (!LooksLikePersonHeader(lines, i))
-                    continue;
-
-                string name = CleanPersonHeader(lines[i]);
-                int end = Math.Min(lines.Length, i + 14);
-                string[] block = lines[i..end];
-                string evidence = string.Join(" | ", block);
-
-                string fiscalCode =
-                    PersonFiscalCode.Match(evidence)
-                        .Value
-                        .ToUpperInvariant();
-
-                foreach (string role in ExtractRoles(block))
-                {
-                    result.Add(new OfficerRow(
-                        record.SourceFile,
-                        name,
-                        fiscalCode,
-                        role,
-                        bookmark.Title,
-                        page.Number,
-                        Limit(evidence, 1200),
-                        "Segnalibro cariche + blocco persona"));
-                }
-            }
-        }
-
-        return result
-            .Where(row =>
-                !string.IsNullOrWhiteSpace(row.Name) &&
-                !string.IsNullOrWhiteSpace(row.Role))
-            .GroupBy(
-                row =>
-                    $"{Normalize(row.Name)}|{Normalize(row.Role)}",
-                StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .ToArray();
-    }
-
-    public IReadOnlyList<BalanceRow> ExtractBalance(
-        CervedRecord record)
+    public IReadOnlyList<BalanceRow> ExtractBalance(CervedRecord record)
     {
         if (record.DocumentType != CervedDocumentType.Company)
             return [];
 
-        BookmarkSection? bookmark =
-            FindExactPreferredBookmark(
-                record.BookmarkSections,
-                "BILANCIO");
+        BookmarkSection? bookmark = FindBookmark(
+            record.BookmarkSections,
+            ["BILANCIO"],
+            excludedTitles: []);
 
         if (bookmark is null)
             return [];
 
-        IReadOnlyList<PageText> pages =
-            PagesInside(record, bookmark);
+        IReadOnlyList<PageText> pages = PagesInside(record, bookmark);
+        string[] lines = Lines(string.Join("\n", pages.Select(x => x.Text)));
 
-        string combined =
-            string.Join("\n", pages.Select(page => page.Text));
+        string yearsLine = lines.FirstOrDefault(x =>
+            YearPattern.Matches(x).Count >= 2) ?? "";
 
-        string[] lines = Lines(combined);
-
-        string yearsLine =
-            lines.FirstOrDefault(line =>
-                YearDate.Matches(line).Count >= 2 &&
-                (Normalize(line).Contains("31/12/") ||
-                 Normalize(line).Contains("IMPORTI ESPRESSI")))
-            ?? "";
-
-        string[] years =
-            YearDate.Matches(yearsLine)
-                .Select(match => match.Groups[1].Value)
-                .Distinct()
-                .TakeLast(3)
-                .ToArray();
+        string[] years = YearPattern.Matches(yearsLine)
+            .Select(x => x.Groups[1].Value)
+            .Distinct()
+            .TakeLast(3)
+            .ToArray();
 
         if (years.Length == 0)
             return [];
 
-        string revenueLine =
-            FindExactMetricLine(lines, "RICAVI NETTI");
+        string revenue = FindMetric(lines, ["RICAVI NETTI", "RICAVI NETTI BENI E SERVIZI"]);
+        string ebitda = FindMetric(lines, ["MARGINE OPERATIVO LORDO"]);
+        string netIncome = FindMetric(lines, ["UTILE (PERDITA) DELL'ESERCIZIO"]);
+        string assets = FindMetric(lines, ["ATTIVO"]);
+        string equity = FindMetric(lines, ["PATRIMONIO NETTO"]);
+        string cashFlow = FindMetric(lines, ["CASH FLOW"]);
 
-        string ebitdaLine =
-            FindExactMetricLine(lines, "MARGINE OPERATIVO LORDO");
+        string[] revenueValues = LastValues(revenue, years.Length);
+        string[] ebitdaValues = LastValues(ebitda, years.Length);
+        string[] netIncomeValues = LastValues(netIncome, years.Length);
+        string[] assetValues = LastValues(assets, years.Length);
+        string[] equityValues = LastValues(equity, years.Length);
+        string[] cashFlowValues = LastValues(cashFlow, years.Length);
 
-        string netIncomeLine =
-            FindExactMetricLine(
-                lines,
-                "UTILE (PERDITA) DELL'ESERCIZIO");
+        string evidence = Limit(string.Join(" | ",
+            new[] { yearsLine, revenue, ebitda, netIncome, assets, equity, cashFlow }
+                .Where(x => !string.IsNullOrWhiteSpace(x))), 2000);
 
-        string assetsLine =
-            FindExactMetricLine(lines, "ATTIVO");
-
-        string equityLine =
-            FindExactMetricLine(lines, "PATRIMONIO NETTO");
-
-        string cashFlowLine =
-            FindExactMetricLine(lines, "CASH FLOW");
-
-        string[] revenue =
-            ExtractMetricValues(revenueLine, years.Length);
-
-        string[] ebitda =
-            ExtractMetricValues(ebitdaLine, years.Length);
-
-        string[] netIncome =
-            ExtractMetricValues(netIncomeLine, years.Length);
-
-        string[] assets =
-            ExtractMetricValues(assetsLine, years.Length);
-
-        string[] equity =
-            ExtractMetricValues(equityLine, years.Length);
-
-        string[] cashFlow =
-            ExtractMetricValues(cashFlowLine, years.Length);
-
-        string evidence = Limit(
-            string.Join(
-                " | ",
-                new[]
-                {
-                    yearsLine,
-                    revenueLine,
-                    ebitdaLine,
-                    netIncomeLine,
-                    assetsLine,
-                    equityLine,
-                    cashFlowLine
-                }.Where(value =>
-                    !string.IsNullOrWhiteSpace(value))),
-            1800);
-
-        int page =
-            pages.FirstOrDefault()?.Number ?? bookmark.StartPage;
-
-        var rows = new List<BalanceRow>();
+        var result = new List<BalanceRow>();
 
         for (int i = 0; i < years.Length; i++)
         {
-            rows.Add(new BalanceRow(
+            result.Add(new BalanceRow(
                 record.SourceFile,
                 years[i],
-                ValueAt(revenue, i),
-                ValueAt(ebitda, i),
-                ValueAt(netIncome, i),
-                ValueAt(assets, i),
-                ValueAt(equity, i),
-                ValueAt(cashFlow, i),
+                At(revenueValues, i),
+                At(ebitdaValues, i),
+                At(netIncomeValues, i),
+                At(assetValues, i),
+                At(equityValues, i),
+                At(cashFlowValues, i),
                 bookmark.Title,
-                page,
+                pages.FirstOrDefault()?.Number ?? bookmark.StartPage,
                 evidence,
-                "Segnalibro Bilancio + righe tabella standard"));
+                "Segnalibro BILANCIO + righe tabella Cerved"));
         }
 
-        return rows;
+        return result;
     }
 
-    private static BookmarkSection? FindExactPreferredBookmark(
+    private static BookmarkSection? FindBookmark(
         IReadOnlyList<BookmarkSection> sections,
-        string exactTitle)
+        IReadOnlyList<string> aliases,
+        IReadOnlyList<string> excludedTitles)
     {
-        string exact = Normalize(exactTitle);
+        IEnumerable<BookmarkSection> allowed = sections.Where(section =>
+            !excludedTitles.Any(excluded =>
+                Normalize(section.Title).Contains(Normalize(excluded))));
 
-        BookmarkSection? match =
-            sections.FirstOrDefault(section =>
-                Normalize(section.Title) == exact);
+        foreach (string alias in aliases)
+        {
+            BookmarkSection? exact = allowed.FirstOrDefault(section =>
+                Normalize(section.Title) == Normalize(alias));
 
-        if (match is not null)
-            return match;
+            if (exact is not null)
+                return exact;
+        }
 
-        return sections
-            .Where(section =>
-                Normalize(section.Title).Contains(exact))
-            .Where(section =>
-                !Normalize(section.Title)
-                    .Contains("ARCHIVIOSOCI") &&
-                !Normalize(section.Title)
-                    .Contains("RISULTANTIDABILANCIO") &&
-                !Normalize(section.Title)
-                    .Contains("ALTREIMPRESE"))
+        return allowed
+            .Where(section => aliases.Any(alias =>
+                Normalize(section.Title).Contains(Normalize(alias))))
             .OrderBy(section => section.Title.Length)
             .FirstOrDefault();
     }
@@ -536,200 +491,210 @@ internal sealed class CervedAdvancedExtractor
             .Where(page => bookmark.ContainsPage(page.Number))
             .ToArray();
 
-    private static int FindCompanyShareholderStart(
-        IReadOnlyList<string> lines,
-        int start)
+    private static List<string> ExtractOwnerNames(IReadOnlyList<string> lines)
     {
-        for (int i = start; i < lines.Count; i++)
-        {
-            if (LooksLikePersonHeader(lines, i))
-                return i;
+        var names = new List<string>();
 
-            if (Normalize(lines[i]).Contains("COGNOME/DENOM") &&
-                i > 0)
-                return Math.Max(0, i - 1);
+        foreach (string raw in lines)
+        {
+            string line = CleanOwnerName(raw);
+
+            if (!LooksLikeOwnerName(line))
+                continue;
+
+            if (names.Count == 0 ||
+                !string.Equals(names[^1], line, StringComparison.OrdinalIgnoreCase))
+                names.Add(line);
         }
 
-        return -1;
+        return names;
     }
 
-    private static int FindNextCompanyShareholderStart(
-        IReadOnlyList<string> lines,
-        int start) =>
-        FindCompanyShareholderStart(lines, start);
-
-    private static bool LooksLikePersonHeader(
-        IReadOnlyList<string> lines,
-        int index)
+    private static bool LooksLikeOwnerName(string value)
     {
-        string line = lines[index].Trim();
-
-        if (line.Length < 5 ||
-            line.Any(char.IsDigit) ||
-            line.Contains(':'))
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Length < 5 ||
+            value.Length > 110 ||
+            value.Any(char.IsDigit) ||
+            value.Contains(':') ||
+            PercentagePattern.IsMatch(value))
             return false;
 
-        string[] words =
-            line.Split(
-                ' ',
-                StringSplitOptions.RemoveEmptyEntries);
+        string n = Normalize(value);
 
-        if (words.Length is < 2 or > 6)
+        string[] excluded =
+        [
+            "SOCI", "CAPITALESOCIALE", "DATAATTO", "DATADEPOSITO",
+            "DATAPROTOCOLLO", "NUMEROPROTOCOLLO", "SOCIOOBENEFICIARIO",
+            "CODICEFISCALE", "QUOTE", "TIPODIRITTO", "PROPRIETA",
+            "USUFRUTTO", "NUDAPROPRIETA", "SITUAZIONEIMPRESA",
+            "ATTIVITA", "INTERROGAZIONI", "CAPOGRUPPO", "AVVERTENZA",
+            "SOCIETAARESPONSABILITALIMITATA", "SOCIETAPERAZIONI",
+            "VIA", "BARI", "DOSSIER", "PAG"
+        ];
+
+        if (excluded.Any(x => n == x || n.StartsWith(x)))
             return false;
 
-        bool uppercase =
-            words.All(word =>
-                word.All(character =>
-                    !char.IsLetter(character) ||
-                    char.IsUpper(character)));
+        string[] words = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
 
-        if (!uppercase)
-            return false;
+        bool allUpper = words.All(word =>
+            word.All(c => !char.IsLetter(c) || char.IsUpper(c)));
 
-        string next =
-            index + 1 < lines.Count
-                ? Normalize(lines[index + 1])
-                : "";
-
-        return next.StartsWith("NATO A") ||
-               next.StartsWith("NATA A") ||
-               next.StartsWith("CODICE FISCALE") ||
-               next.Contains("RAPPRESENTANTE DELL'IMPRESA");
+        return allUpper && words.Length is >= 2 and <= 12;
     }
 
-    private static string CleanPersonHeader(string value)
+    private static List<string> ExtractRights(IReadOnlyList<string> lines)
     {
-        int parenthesis = value.IndexOf('(');
+        var result = new List<string>();
 
-        return parenthesis > 0
-            ? value[..parenthesis].Trim()
-            : value.Trim();
-    }
-
-    private static string ExtractCompanyShareholderName(
-        IReadOnlyList<string> block,
-        string evidence,
-        string fiscalCode)
-    {
-        for (int i = 0; i < block.Count; i++)
+        for (int i = 0; i < lines.Count; i++)
         {
-            if (LooksLikePersonHeader(block, i))
-                return CleanPersonHeader(block[i]);
+            string normalized = Normalize(lines[i]);
+
+            if (normalized.Contains("NUDAPROPRIETA"))
+                result.Add("Nuda proprietà");
+            else if (normalized.Contains("USUFRUTTO"))
+                result.Add("Usufrutto");
+            else if (normalized == "PROPRIETA" || normalized.Contains("PROPRIETA"))
+                result.Add("Proprietà");
         }
 
-        Match structured = Regex.Match(
-            evidence,
-            @"COGNOME\s*/\s*DENOM\.\s*:\s*([A-Z0-9'&\.\-\s]+?)\s+CODICE\s+FISCALE\s*:\s*([A-Z0-9]*)",
-            RegexOptions.IgnoreCase);
+        return result;
+    }
 
-        if (structured.Success)
+    private static string ResolveFiscalCodeByName(
+        string name,
+        IReadOnlyList<string> names,
+        IReadOnlyList<string> fiscalCodes)
+    {
+        int firstIndex = names
+            .Select((value, index) => new { value, index })
+            .FirstOrDefault(x =>
+                Normalize(x.value) == Normalize(name))
+            ?.index ?? -1;
+
+        return firstIndex >= 0 && firstIndex < fiscalCodes.Count
+            ? fiscalCodes[firstIndex]
+            : "";
+    }
+
+    private static string FindNominalValueNear(
+        IReadOnlyList<string> lines,
+        string fiscalCode,
+        string percentage)
+    {
+        int cfIndex = lines
+            .Select((line, index) => new { line, index })
+            .FirstOrDefault(x => x.line.Contains(
+                fiscalCode,
+                StringComparison.OrdinalIgnoreCase))
+            ?.index ?? -1;
+
+        if (cfIndex < 0)
+            return "";
+
+        int to = Math.Min(lines.Count, cfIndex + 8);
+        string[] block = lines[cfIndex..to];
+
+        return FindNominalValue(block, percentage);
+    }
+
+    private static string FindNominalValue(
+        IReadOnlyList<string> lines,
+        string percentageToExclude = "")
+    {
+        foreach (string line in lines)
         {
-            string surnameOrCompany =
-                structured.Groups[1].Value.Trim();
-
-            Match name = Regex.Match(
-                evidence,
-                @"\bNOME\s*:\s*([A-Z'&\.\-\s]+?)(?:\s+DATA\s+DI\s+NASCITA|\s+SESSO|\s+CITTADINANZA|$)",
-                RegexOptions.IgnoreCase);
-
-            if (name.Success &&
-                !ContainsLegalForm(surnameOrCompany))
+            foreach (Match match in MoneyPattern.Matches(line))
             {
-                return $"{surnameOrCompany} {name.Groups[1].Value.Trim()}"
-                    .Trim();
-            }
+                string value = match.Groups[1].Value;
 
-            return surnameOrCompany;
+                if (!string.IsNullOrWhiteSpace(percentageToExclude) &&
+                    value == percentageToExclude)
+                    continue;
+
+                if (value.Length >= 3)
+                    return value;
+            }
         }
 
         return "";
     }
 
-    private static string ExtendCompanyName(
-        IReadOnlyList<string> block,
-        string firstLineName)
-    {
-        var parts = new List<string> { firstLineName };
+    private static string FindBestOwnerName(IReadOnlyList<string> block) =>
+        block
+            .Select(CleanOwnerName)
+            .FirstOrDefault(LooksLikeOwnerName) ?? "";
 
-        for (int i = 1; i < Math.Min(block.Count, 4); i++)
+    private static string BuildCompanyName(
+        IReadOnlyList<string> block,
+        string firstLine)
+    {
+        var parts = new List<string> { firstLine.Trim() };
+
+        for (int i = 1; i < Math.Min(block.Count, 5); i++)
         {
             string line = block[i];
+            string n = Normalize(line);
 
-            if (ContainsLegalForm(line) ||
-                Normalize(line).Contains("QUOTE/AZIONI") ||
-                Normalize(line).StartsWith("CODICE FISCALE"))
-                break;
-
-            if (line.Any(char.IsDigit))
+            if (n.StartsWith("CODICEFISCALE") ||
+                n.StartsWith("NREA") ||
+                n.StartsWith("VIA") ||
+                n.StartsWith("SITUAZIONEIMPRESA") ||
+                line.Any(char.IsDigit))
                 break;
 
             parts.Add(line);
         }
 
-        return Regex.Replace(
-            string.Join(" ", parts),
-            @"\s{2,}",
-            " ")
-            .Trim();
+        return Regex.Replace(string.Join(" ", parts), @"\s{2,}", " ").Trim();
     }
 
-    private static bool ContainsLegalForm(string value)
+    private static string FindLabelledFiscalCode(string text)
     {
-        string normalized = Normalize(value);
-
-        return normalized.Contains("S.R.L") ||
-               normalized.Contains("S.P.A") ||
-               normalized.Contains("SOCIETAARESPONSABILITALIMITATA") ||
-               normalized.Contains("SOCIETAPERAZIONI") ||
-               normalized.Contains("SOCIETASEMPLICE") ||
-               normalized.Contains("S.N.C") ||
-               normalized.Contains("S.A.S");
-    }
-
-    private static string FindFiscalCodeNearLabel(string text)
-    {
-        Match labelled = Regex.Match(
+        Match match = Regex.Match(
             text,
             @"CODICE\s+FISCALE\s*:\s*([A-Z0-9]{11,16})",
             RegexOptions.IgnoreCase);
 
-        if (labelled.Success)
-            return labelled.Groups[1].Value.ToUpperInvariant();
-
-        Match person = PersonFiscalCode.Match(text);
-
-        if (person.Success)
-            return person.Value.ToUpperInvariant();
-
-        Match numeric = NumericFiscalCode.Match(text);
-
-        return numeric.Success ? numeric.Value : "";
+        return match.Success
+            ? match.Groups[1].Value.ToUpperInvariant()
+            : "";
     }
 
-    private static string ExtractNominalValueFromParticipationLine(
-        string line)
+    private static string FindRight(string text)
     {
-        Match percentage = Percentage.Match(line);
+        string n = Normalize(text);
 
-        if (!percentage.Success)
-            return "";
+        if (n.Contains("NUDAPROPRIETA")) return "Nuda proprietà";
+        if (n.Contains("USUFRUTTO")) return "Usufrutto";
+        if (n.Contains("PROPRIETA")) return "Proprietà";
+        if (n.Contains("SOCIOUNICO")) return "Socio unico";
 
-        string after =
-            line[(percentage.Index + percentage.Length)..];
+        return "";
+    }
 
-        Match value = Regex.Match(
-            after,
-            @"\b([\d\.\,]+)\b");
+    private static string FindPersonNameBefore(
+        IReadOnlyList<string> lines,
+        int index)
+    {
+        for (int i = index - 1; i >= Math.Max(0, index - 5); i--)
+        {
+            string value = CleanOwnerName(lines[i]);
 
-        return value.Success
-            ? value.Groups[1].Value
-            : "";
+            if (LooksLikeOwnerName(value) &&
+                !ContainsLegalForm(value))
+                return value;
+        }
+
+        return "";
     }
 
     private static IReadOnlyList<string> ExtractRoles(
         IReadOnlyList<string> block)
     {
-        string text = Normalize(string.Join(" | ", block));
+        string text = Normalize(string.Join(" ", block));
 
         string[] roles =
         [
@@ -749,70 +714,99 @@ internal sealed class CervedAdvancedExtractor
             .ToArray();
     }
 
-    private static string FindRightType(string text)
+    private static bool ContainsLegalForm(string value)
     {
-        string normalized = Normalize(text);
+        string n = Normalize(value);
 
-        if (normalized.Contains("NUDAPROPRIETA"))
-            return "Nuda proprietà";
+        return n.Contains("SRL") ||
+               n.Contains("SPA") ||
+               n.Contains("SOCIETA");
+    }
 
-        if (normalized.Contains("USUFRUTTO"))
-            return "Usufrutto";
+    private static string FindMetric(
+        IReadOnlyList<string> lines,
+        IReadOnlyList<string> aliases)
+    {
+        foreach (string alias in aliases)
+        {
+            string normalizedAlias = Normalize(alias);
 
-        if (normalized.Contains("PROPRIETA"))
-            return "Proprietà";
+            string? line = lines.FirstOrDefault(value =>
+            {
+                string normalized = Normalize(value);
 
-        if (normalized.Contains("SOCIOUNICO"))
-            return "Socio unico";
+                if (!normalized.StartsWith(normalizedAlias))
+                    return false;
+
+                string remainder = normalized[normalizedAlias.Length..];
+
+                return remainder.Length == 0 ||
+                       char.IsDigit(remainder[0]) ||
+                       remainder[0] == '-';
+            });
+
+            if (line is not null)
+                return line;
+        }
 
         return "";
     }
 
-    private static string FindExactMetricLine(
-        IReadOnlyList<string> lines,
-        string metric)
-    {
-        string normalizedMetric = Normalize(metric);
-
-        return lines.FirstOrDefault(line =>
-        {
-            string normalized = Normalize(line);
-
-            if (!normalized.StartsWith(normalizedMetric))
-                return false;
-
-            string remainder =
-                normalized[normalizedMetric.Length..];
-
-            return remainder.Length == 0 ||
-                   char.IsDigit(remainder[0]) ||
-                   remainder[0] is '-' or '+';
-        }) ?? "";
-    }
-
-    private static string[] ExtractMetricValues(
-        string line,
-        int count)
+    private static string[] LastValues(string line, int count)
     {
         if (string.IsNullOrWhiteSpace(line))
             return [];
 
-        MatchCollection matches = Regex.Matches(
-            line,
-            @"(?<![A-Z])[-+]?\d{1,3}(?:\.\d{3})*(?:,\d+)?|[-+]?\d+");
-
-        return matches
-            .Select(match => match.Value)
+        return Regex.Matches(
+                line,
+                @"[-+]?\d{1,3}(?:\.\d{3})*(?:,\d+)?|[-+]?\d+")
+            .Select(x => x.Value)
             .TakeLast(count)
             .ToArray();
     }
 
-    private static string ValueAt(
-        IReadOnlyList<string> values,
-        int index) =>
-        index >= 0 && index < values.Count
-            ? values[index]
-            : "";
+    private static string At(IReadOnlyList<string> values, int index) =>
+        index >= 0 && index < values.Count ? values[index] : "";
+
+    private static int FindLine(IReadOnlyList<string> lines, string text)
+    {
+        string target = Normalize(text);
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            if (Normalize(lines[i]).Contains(target))
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static int FindFirstLineAfter(
+        IReadOnlyList<string> lines,
+        int start,
+        IReadOnlyList<string> texts)
+    {
+        for (int i = start + 1; i < lines.Count; i++)
+        {
+            string normalized = Normalize(lines[i]);
+
+            if (texts.Any(text =>
+                normalized.Contains(Normalize(text))))
+                return i;
+        }
+
+        return -1;
+    }
+
+    private static string CleanOwnerName(string value)
+    {
+        value = Regex.Replace(value, @"^\s*\d+[\.\)]\s*", "");
+        value = Regex.Replace(value, @"\s*\(\d+\)\s*$", "");
+        value = Regex.Replace(value, @"\s*\(SOCIO.*?\)\s*$",
+            "", RegexOptions.IgnoreCase);
+
+        return Regex.Replace(value, @"\s{2,}", " ").Trim();
+    }
 
     private static string[] Lines(string text) =>
         text.Split(
@@ -830,10 +824,6 @@ internal sealed class CervedAdvancedExtractor
             .Where(char.IsLetterOrDigit)
             .ToArray());
 
-    private static string Limit(
-        string value,
-        int maximum) =>
-        value.Length <= maximum
-            ? value
-            : value[..maximum];
+    private static string Limit(string value, int max) =>
+        value.Length <= max ? value : value[..max];
 }
