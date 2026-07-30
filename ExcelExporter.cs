@@ -124,7 +124,10 @@ internal sealed class ExcelExporter
         [
             "File origine",
             "Socio",
-            "Codice fiscale/P.IVA",
+            "Società partecipata",
+            "CF/P.IVA socio",
+            "CF/P.IVA società partecipata",
+            "Valore nominale",
             "Quota %",
             "Tipo diritto",
             "Segnalibro",
@@ -142,21 +145,24 @@ internal sealed class ExcelExporter
                      _advanced.ExtractShareholders(record))
             {
                 ws.Cell(row, 1).Value = item.SourceFile;
-                ws.Cell(row, 2).Value = item.Shareholder;
-                ws.Cell(row, 3).Value = item.FiscalCode;
-                ws.Cell(row, 4).Value = item.Percentage;
-                ws.Cell(row, 5).Value = item.RightType;
-                ws.Cell(row, 6).Value = item.Bookmark;
-                ws.Cell(row, 7).Value = item.Page;
-                ws.Cell(row, 8).Value = item.Method;
-                ws.Cell(row, 9).Value = Safe(item.Evidence);
+                ws.Cell(row, 2).Value = item.Owner;
+                ws.Cell(row, 3).Value = item.ParticipatedCompany;
+                ws.Cell(row, 4).Value = item.OwnerFiscalCode;
+                ws.Cell(row, 5).Value = item.ParticipatedCompanyFiscalCode;
+                ws.Cell(row, 6).Value = item.NominalValue;
+                ws.Cell(row, 7).Value = item.Percentage;
+                ws.Cell(row, 8).Value = item.RightType;
+                ws.Cell(row, 9).Value = item.Bookmark;
+                ws.Cell(row, 10).Value = item.Page;
+                ws.Cell(row, 11).Value = item.Method;
+                ws.Cell(row, 12).Value = Safe(item.Evidence);
                 row++;
             }
         }
 
         FormatSheet(ws, 75);
-        ws.Column(9).Width = 100;
-        ws.Column(9).Style.Alignment.WrapText = true;
+        ws.Column(12).Width = 100;
+        ws.Column(12).Style.Alignment.WrapText = true;
     }
 
     private void ExportCariche(
