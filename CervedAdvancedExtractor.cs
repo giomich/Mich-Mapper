@@ -63,20 +63,28 @@ internal sealed class CervedAdvancedExtractor
             @"(?<cf>[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]|\d{11})\s+" +
             @"(?<nominal>\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)\s+" +
             @"(?<percentage>\d{1,3}(?:[\,\.]\d+)?)%\s+" +
-            @"(?<right>PROPRIETA'|PROPRIETÀ|USUFRUTTO|NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|SOCIO\s+UNICO)\s*$",
+            @"\(?\s*(?<right>NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|USUFRUTTO|PROPRIETA'|PROPRIETÀ|SOCIO\s+UNICO)\s*\)?\s*$",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static readonly Regex CompanyParticipationStart =
         new(@"^\s*\d+\.\s+(.+)$", RegexOptions.Compiled);
 
+    private static readonly Regex SectionValueRowPattern =
+        new(
+            @"(?<cf>[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]|\d{11})\s+" +
+            @"(?<nominal>\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)\s+" +
+            @"(?<percentage>\d{1,3}(?:[\,\.]\d+)?)\s*%\s*" +
+            @"\(?\s*(?<right>NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|USUFRUTTO|PROPRIETA'|PROPRIETÀ|SOCIO\s+UNICO)\s*\)?",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
     public IReadOnlyList<ShareholderRow> ExtractShareholders(CervedRecord record)
     {
-        return record.DocumentType switch
-        {
-            CervedDocumentType.Company => ExtractCompanyShareholders(record),
-            CervedDocumentType.Person => ExtractPersonParticipations(record),
-            _ => []
-        };
+        // Il foglio SOCI viene alimentato esclusivamente dai DOSSIER TOP
+        // delle società. Le partecipazioni dei dossier persona non vengono
+        // più esportate, per evitare duplicazioni e ricostruzioni incomplete.
+        return record.DocumentType == CervedDocumentType.Company
+            ? ExtractCompanyShareholders(record)
+            : [];
     }
 
     private static IReadOnlyList<ShareholderRow> ExtractCompanyShareholders(
@@ -125,7 +133,7 @@ internal sealed class CervedAdvancedExtractor
                 @"^(?<cf>[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]|\d{11})\s+" +
                 @"(?<nominal>\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)\s+" +
                 @"(?<percentage>\d{1,3}(?:[\,\.]\d+)?)%\s+" +
-                @"(?<right>PROPRIETA'|PROPRIETÀ|USUFRUTTO|NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|SOCIO\s+UNICO)\s*$",
+                @"\(?\s*(?<right>NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|USUFRUTTO|PROPRIETA'|PROPRIETÀ|SOCIO\s+UNICO)\s*\)?\s*$",
                 RegexOptions.IgnoreCase);
 
             if (!values.Success)
@@ -198,6 +206,54 @@ internal sealed class CervedAdvancedExtractor
                 "Segnalibro SOCI + ricostruzione colonne"));
         }
 
+
+        // 4) Passaggio di recupero sull'intera sezione.
+        // Serve per righe spezzate dal PDF e per diritti tra parentesi,
+        // ad esempio: 3.200.000,00 16% (NUDA PROPRIETA').
+        string sectionText = string.Join(
+            "\n",
+            pages.Select(page => page.Text));
+
+        foreach (Match values in SectionValueRowPattern.Matches(sectionText))
+        {
+            string cf = values.Groups["cf"].Value.ToUpperInvariant();
+            string percentage = values.Groups["percentage"].Value;
+            string right = NormalizeRight(values.Groups["right"].Value);
+
+            if (rows.Any(row =>
+                    row.OwnerFiscalCode.Equals(
+                        cf,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    row.Percentage == percentage &&
+                    Normalize(row.RightType) == Normalize(right)))
+                continue;
+
+            string owner = FindOwnerBeforeValueMatch(
+                sectionText,
+                values.Index);
+
+            if (string.IsNullOrWhiteSpace(owner))
+                continue;
+
+            int evidenceStart = Math.Max(0, values.Index - 350);
+            int evidenceLength = Math.Min(
+                sectionText.Length - evidenceStart,
+                values.Length + 700);
+
+            rows.Add(CreateShareholderRow(
+                record,
+                bookmark,
+                pages,
+                owner,
+                cf,
+                percentage,
+                values.Groups["nominal"].Value,
+                right,
+                sectionText.Substring(evidenceStart, evidenceLength)
+                    .Replace('\n', ' '),
+                "Segnalibro SOCI + recupero riga completa"));
+        }
+
         return rows
             .Where(row =>
                 !string.IsNullOrWhiteSpace(row.Owner) &&
@@ -238,6 +294,61 @@ internal sealed class CervedAdvancedExtractor
             FindEvidencePage(pages, fiscalCode),
             Limit(evidence, 2000),
             method);
+    }
+
+
+    private static string FindOwnerBeforeValueMatch(
+        string sectionText,
+        int valueIndex)
+    {
+        int lineStart = sectionText.LastIndexOf(
+            '\n',
+            Math.Max(0, valueIndex - 1));
+
+        lineStart = lineStart < 0 ? 0 : lineStart + 1;
+
+        string sameLinePrefix = CleanOwnerName(
+            sectionText.Substring(
+                lineStart,
+                valueIndex - lineStart));
+
+        if (IsPlausibleOwner(sameLinePrefix))
+            return ContainsLegalForm(sameLinePrefix)
+                ? TrimAfterLegalForm(sameLinePrefix)
+                : sameLinePrefix;
+
+        int windowStart = Math.Max(0, valueIndex - 900);
+        string before = sectionText.Substring(
+            windowStart,
+            valueIndex - windowStart);
+
+        string[] previousLines = Lines(before);
+
+        for (int i = previousLines.Length - 1;
+             i >= Math.Max(0, previousLines.Length - 15);
+             i--)
+        {
+            string candidate = CleanOwnerName(previousLines[i]);
+
+            if (IsPlausibleOwner(candidate))
+                return ContainsLegalForm(candidate)
+                    ? TrimAfterLegalForm(candidate)
+                    : candidate;
+        }
+
+        return "";
+    }
+
+    private static bool IsPlausibleOwner(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) ||
+            IsNoiseName(value) ||
+            FiscalCodePattern.IsMatch(value) ||
+            PercentagePattern.IsMatch(value))
+            return false;
+
+        return ContainsLegalForm(value) ||
+               LooksLikePersonName(value);
     }
 
     private static string FindOwnerForSeparatedValueRow(
