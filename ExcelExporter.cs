@@ -1,4 +1,6 @@
 using ClosedXML.Excel;
+using System.Globalization;
+using System.Text.RegularExpressions;
 
 namespace MichMapper;
 
@@ -13,9 +15,14 @@ internal sealed class ExcelExporter
     {
         using var workbook = new XLWorkbook();
 
+        IReadOnlyList<ShareholderRow> shareholders = records
+            .SelectMany(record => _advanced.ExtractShareholders(record))
+            .ToList();
+
         ExportAnagrafiche(workbook, records);
         ExportSegnalibri(workbook, records);
-        ExportSoci(workbook, records);
+        ExportSoci(workbook, shareholders);
+        ExportControlli(workbook, records, shareholders);
         ExportCariche(workbook, records);
         ExportBilancio(workbook, records);
         ExportEvidenze(workbook, records);
@@ -46,7 +53,9 @@ internal sealed class ExcelExporter
             "Data costituzione",
             "Pagine",
             "Segnalibri",
-            "Validazione"
+            "Validazione",
+            "ID univoco",
+            "Nome visualizzato"
         ];
 
         WriteHeaders(ws, headers);
@@ -71,6 +80,8 @@ internal sealed class ExcelExporter
             ws.Cell(row, 13).Value = record.PageCount;
             ws.Cell(row, 14).Value = record.BookmarkStatus;
             ws.Cell(row, 15).Value = record.ValidationStatus;
+            ws.Cell(row, 16).Value = GetUniqueId(record);
+            ws.Cell(row, 17).Value = GetDisplayName(record);
         }
 
         FormatSheet(ws, 55);
@@ -114,9 +125,9 @@ internal sealed class ExcelExporter
         FormatSheet(ws, 80);
     }
 
-    private void ExportSoci(
+    private static void ExportSoci(
         XLWorkbook workbook,
-        IReadOnlyList<CervedRecord> records)
+        IReadOnlyList<ShareholderRow> shareholders)
     {
         var ws = workbook.Worksheets.Add("SOCI");
 
@@ -133,36 +144,158 @@ internal sealed class ExcelExporter
             "Segnalibro",
             "Pagina",
             "Metodo",
-            "Evidenza"
+            "Evidenza",
+            "ID socio",
+            "ID società partecipata",
+            "Tipo socio"
         ];
 
         WriteHeaders(ws, headers);
         int row = 2;
 
-        foreach (CervedRecord record in records)
+        foreach (ShareholderRow item in shareholders)
         {
-            foreach (ShareholderRow item in
-                     _advanced.ExtractShareholders(record))
-            {
-                ws.Cell(row, 1).Value = item.SourceFile;
-                ws.Cell(row, 2).Value = item.Owner;
-                ws.Cell(row, 3).Value = item.ParticipatedCompany;
-                ws.Cell(row, 4).Value = item.OwnerFiscalCode;
-                ws.Cell(row, 5).Value = item.ParticipatedCompanyFiscalCode;
-                ws.Cell(row, 6).Value = item.NominalValue;
-                ws.Cell(row, 7).Value = item.Percentage;
-                ws.Cell(row, 8).Value = item.RightType;
-                ws.Cell(row, 9).Value = item.Bookmark;
-                ws.Cell(row, 10).Value = item.Page;
-                ws.Cell(row, 11).Value = item.Method;
-                ws.Cell(row, 12).Value = Safe(item.Evidence);
-                row++;
-            }
+            ws.Cell(row, 1).Value = item.SourceFile;
+            ws.Cell(row, 2).Value = item.Owner;
+            ws.Cell(row, 3).Value = item.ParticipatedCompany;
+            ws.Cell(row, 4).Value = item.OwnerFiscalCode;
+            ws.Cell(row, 5).Value = item.ParticipatedCompanyFiscalCode;
+            ws.Cell(row, 6).Value = item.NominalValue;
+            ws.Cell(row, 7).Value = item.Percentage;
+            ws.Cell(row, 8).Value = item.RightType;
+            ws.Cell(row, 9).Value = item.Bookmark;
+            ws.Cell(row, 10).Value = item.Page;
+            ws.Cell(row, 11).Value = item.Method;
+            ws.Cell(row, 12).Value = Safe(item.Evidence);
+            ws.Cell(row, 13).Value = item.OwnerFiscalCode;
+            ws.Cell(row, 14).Value = item.ParticipatedCompanyFiscalCode;
+            ws.Cell(row, 15).Value = GetOwnerType(item);
+            row++;
         }
 
         FormatSheet(ws, 75);
         ws.Column(12).Width = 100;
         ws.Column(12).Style.Alignment.WrapText = true;
+    }
+
+    private static void ExportControlli(
+        XLWorkbook workbook,
+        IReadOnlyList<CervedRecord> records,
+        IReadOnlyList<ShareholderRow> shareholders)
+    {
+        var ws = workbook.Worksheets.Add("CONTROLLI");
+
+        string[] headers =
+        [
+            "Società",
+            "ID società",
+            "File origine",
+            "Totale quote %",
+            "Usufrutto %",
+            "Nuda proprietà %",
+            "Totale rettificato %",
+            "Esito quote",
+            "Numero righe SOCI",
+            "ID società presente",
+            "Bilancio presente",
+            "Cariche presenti",
+            "Segnalibro diagnostico",
+            "Pagina diagnostica",
+            "Metodo diagnostico",
+            "Evidenza diagnostica"
+        ];
+
+        WriteHeaders(ws, headers);
+
+        var companyRecords = records
+            .Where(record => record.DocumentType == CervedDocumentType.Company)
+            .ToList();
+
+        int row = 2;
+
+        foreach (CervedRecord record in companyRecords)
+        {
+            string companyId = GetUniqueId(record);
+            string displayName = GetDisplayName(record);
+
+            List<ShareholderRow> companyRows = shareholders
+                .Where(item =>
+                    (!string.IsNullOrWhiteSpace(companyId) &&
+                     NormalizeId(item.ParticipatedCompanyFiscalCode) ==
+                     NormalizeId(companyId)) ||
+                    (string.IsNullOrWhiteSpace(companyId) &&
+                     item.SourceFile.Equals(
+                         record.SourceFile,
+                         StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+
+            decimal gross = companyRows.Sum(item => ParsePercentage(item.Percentage));
+            decimal usufruct = companyRows
+                .Where(item => NormalizeText(item.RightType).Contains("USUFRUTTO"))
+                .Sum(item => ParsePercentage(item.Percentage));
+            decimal bareOwnership = companyRows
+                .Where(item => NormalizeText(item.RightType).Contains("NUDA PROPRIETA"))
+                .Sum(item => ParsePercentage(item.Percentage));
+            decimal adjusted = gross - usufruct;
+
+            bool idPresent = !string.IsNullOrWhiteSpace(companyId);
+            bool quotesOk = companyRows.Count > 0 &&
+                            Math.Abs(adjusted - 100m) <= 0.01m;
+
+            ShareholderRow? diagnostic = companyRows
+                .FirstOrDefault(item =>
+                    string.IsNullOrWhiteSpace(item.OwnerFiscalCode) ||
+                    string.IsNullOrWhiteSpace(item.ParticipatedCompanyFiscalCode))
+                ?? companyRows.FirstOrDefault();
+
+            bool hasBalance = records
+                .Where(r => r.SourceFile == record.SourceFile)
+                .Any(r => r.BookmarkSections.Any(section =>
+                    NormalizeText(section.Title).Contains("BILANC")));
+
+            bool hasOfficers = records
+                .Where(r => r.SourceFile == record.SourceFile)
+                .Any(r => r.BookmarkSections.Any(section =>
+                    NormalizeText(section.Title).Contains("CARIC")));
+
+            ws.Cell(row, 1).Value = displayName;
+            ws.Cell(row, 2).Value = companyId;
+            ws.Cell(row, 3).Value = record.SourceFile;
+            ws.Cell(row, 4).Value = gross;
+            ws.Cell(row, 5).Value = usufruct;
+            ws.Cell(row, 6).Value = bareOwnership;
+            ws.Cell(row, 7).Value = adjusted;
+            ws.Cell(row, 8).Value = quotesOk ? "OK" : "ATTENZIONE";
+            ws.Cell(row, 9).Value = companyRows.Count;
+            ws.Cell(row, 10).Value = idPresent ? "OK" : "MANCANTE";
+            ws.Cell(row, 11).Value = hasBalance ? "SI" : "NO";
+            ws.Cell(row, 12).Value = hasOfficers ? "SI" : "NO";
+            ws.Cell(row, 13).Value = diagnostic?.Bookmark ?? "";
+            ws.Cell(row, 14).Value = diagnostic?.Page ?? 0;
+            ws.Cell(row, 15).Value = diagnostic?.Method ?? "";
+            ws.Cell(row, 16).Value = Safe(
+                quotesOk
+                    ? "Controllo quote superato."
+                    : BuildDiagnosticEvidence(
+                        companyRows,
+                        gross,
+                        usufruct,
+                        bareOwnership,
+                        adjusted));
+
+            if (!quotesOk || !idPresent)
+            {
+                ws.Range(row, 1, row, headers.Length)
+                    .Style.Fill.BackgroundColor = XLColor.LightPink;
+            }
+
+            row++;
+        }
+
+        FormatSheet(ws, 80);
+        ws.Columns(4, 7).Style.NumberFormat.Format = "0.00";
+        ws.Column(16).Width = 100;
+        ws.Column(16).Style.Alignment.WrapText = true;
     }
 
     private void ExportCariche(
@@ -398,6 +531,113 @@ internal sealed class ExcelExporter
         ws.Cell(row, 6).Value = field.Method;
         ws.Cell(row, 7).Value = Safe(field.Evidence);
         row++;
+    }
+
+    private static string GetUniqueId(CervedRecord record)
+    {
+        if (record.DocumentType == CervedDocumentType.Person)
+            return NormalizeId(record.CodiceFiscale.Value);
+
+        string vat = NormalizeId(record.PartitaIva.Value);
+        return !string.IsNullOrWhiteSpace(vat)
+            ? vat
+            : NormalizeId(record.CodiceFiscale.Value);
+    }
+
+    private static string GetDisplayName(CervedRecord record)
+    {
+        if (record.DocumentType == CervedDocumentType.Person)
+        {
+            string fullName = string.Join(
+                " ",
+                new[] { record.Nome.Value, record.Cognome.Value }
+                    .Where(value => !string.IsNullOrWhiteSpace(value)));
+
+            if (!string.IsNullOrWhiteSpace(fullName))
+                return fullName.Trim();
+        }
+
+        return string.IsNullOrWhiteSpace(record.Denominazione.Value)
+            ? Path.GetFileNameWithoutExtension(record.SourceFile)
+            : record.Denominazione.Value.Trim();
+    }
+
+    private static string GetOwnerType(ShareholderRow item)
+    {
+        string id = NormalizeId(item.OwnerFiscalCode);
+
+        if (Regex.IsMatch(
+                id,
+                @"^[A-Z]{6}\d{2}[A-EHLMPRST]\d{2}[A-Z]\d{3}[A-Z]$",
+                RegexOptions.IgnoreCase))
+            return "Persona fisica";
+
+        if (Regex.IsMatch(id, @"^\d{11}$"))
+            return "Società/ente";
+
+        return "Da verificare";
+    }
+
+    private static decimal ParsePercentage(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return 0m;
+
+        string normalized = value
+            .Replace("%", "")
+            .Replace(" ", "")
+            .Replace(".", ",")
+            .Trim();
+
+        return decimal.TryParse(
+            normalized,
+            NumberStyles.Number,
+            CultureInfo.GetCultureInfo("it-IT"),
+            out decimal result)
+                ? result
+                : 0m;
+    }
+
+    private static string NormalizeId(string value) =>
+        Regex.Replace(
+            value ?? "",
+            @"[^A-Z0-9]",
+            "",
+            RegexOptions.IgnoreCase)
+        .ToUpperInvariant();
+
+    private static string NormalizeText(string value)
+    {
+        string normalized = (value ?? "")
+            .ToUpperInvariant()
+            .Replace("À", "A")
+            .Replace("È", "E")
+            .Replace("É", "E")
+            .Replace("Ì", "I")
+            .Replace("Ò", "O")
+            .Replace("Ù", "U");
+
+        return Regex.Replace(normalized, @"\s+", " ").Trim();
+    }
+
+    private static string BuildDiagnosticEvidence(
+        IReadOnlyList<ShareholderRow> rows,
+        decimal gross,
+        decimal usufruct,
+        decimal bareOwnership,
+        decimal adjusted)
+    {
+        string detail = string.Join(
+            " | ",
+            rows.Select(item =>
+                $"{item.Owner}: {item.Percentage}% - {item.RightType}"));
+
+        return
+            $"Totale quote: {gross:0.##}%; " +
+            $"usufrutto: {usufruct:0.##}%; " +
+            $"nuda proprietà: {bareOwnership:0.##}%; " +
+            $"totale rettificato: {adjusted:0.##}%. " +
+            $"Righe: {detail}";
     }
 
     private static string Safe(string value) =>
