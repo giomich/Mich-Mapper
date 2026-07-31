@@ -98,51 +98,78 @@ internal sealed class CervedAdvancedExtractor
         if (bookmark is null)
             return [];
 
-        // Nei dossier Cerved la tabella SOCI può iniziare in fondo alla pagina
-        // del segnalibro e proseguire nella pagina successiva. Per questo
-        // includiamo fino a due pagine di continuazione e ritagliamo il testo
-        // usando i titoli reali delle sezioni.
-        PageText[] pages = PagesForShareholderTable(record, bookmark);
-        string sectionText = ExtractExactShareholderTableText(pages);
+        // La tabella SOCI può proseguire per un numero variabile di pagine.
+        // Si parte dalla pagina del segnalibro e si continua fino al titolo
+        // SOCI - CARICHE / QUALIFICHE IN ALTRE IMPRESE.
+        PageText[] pages = record.Pages
+            .Where(page => page.Number >= bookmark.StartPage)
+            .OrderBy(page => page.Number)
+            .ToArray();
 
-        if (string.IsNullOrWhiteSpace(sectionText))
+        ShareholderSection section = ExtractShareholderSection(pages);
+
+        if (section.Lines.Length == 0)
             return [];
+
+        var fiscalCodes = new List<FiscalCodeOccurrence>();
+        var quotas = new List<QuotaOccurrence>();
+
+        for (int i = 0; i < section.Lines.Length; i++)
+        {
+            string line = section.Lines[i];
+
+            foreach (Match match in FiscalCodePattern.Matches(line))
+            {
+                fiscalCodes.Add(new FiscalCodeOccurrence(
+                    i,
+                    match.Index,
+                    match.Value.ToUpperInvariant(),
+                    line));
+            }
+
+            string window = string.Join(
+                " ",
+                section.Lines.Skip(i).Take(4));
+
+            foreach (Match match in ShareholderQuotaPattern.Matches(window))
+            {
+                quotas.Add(new QuotaOccurrence(
+                    i,
+                    match.Groups["nominal"].Value,
+                    match.Groups["percentage"].Value,
+                    NormalizeRight(match.Groups["right"].Value)));
+            }
+        }
 
         var rows = new List<ShareholderRow>();
 
-        // La riga dati è l'elemento più stabile della tabella:
-        // CF/P.IVA | valore nominale | percentuale | diritto.
-        // Il nome può essere sulla stessa riga oppure in un blocco precedente.
-        foreach (Match values in SectionValueRowPattern.Matches(sectionText))
+        foreach (QuotaOccurrence quota in quotas)
         {
-            string cf = values.Groups["cf"].Value.ToUpperInvariant();
-            string percentage = values.Groups["percentage"].Value;
-            string right = NormalizeRight(values.Groups["right"].Value);
+            FiscalCodeOccurrence? fiscalCode =
+                FindFiscalCodeForQuota(fiscalCodes, quota.LineIndex);
 
-            string owner = FindOwnerBeforeValueMatch(
-                sectionText,
-                values.Index);
+            if (fiscalCode is null)
+                continue;
+
+            string owner = FindOwnerForFiscalCode(section.Lines, fiscalCode);
 
             if (string.IsNullOrWhiteSpace(owner))
                 continue;
-
-            int evidenceStart = Math.Max(0, values.Index - 1200);
-            int evidenceLength = Math.Min(
-                sectionText.Length - evidenceStart,
-                values.Length + 1600);
 
             rows.Add(CreateShareholderRow(
                 record,
                 bookmark,
                 pages,
                 owner,
-                cf,
-                percentage,
-                values.Groups["nominal"].Value,
-                right,
-                sectionText.Substring(evidenceStart, evidenceLength)
-                    .Replace('\n', ' '),
-                "Segnalibro SOCI + tabella delimitata"));
+                fiscalCode.Value,
+                quota.Percentage,
+                quota.NominalValue,
+                quota.RightType,
+                BuildShareholderEvidence(
+                    section.Lines,
+                    quota.LineIndex,
+                    fiscalCode.LineIndex),
+                "Segnalibro SOCI + lettura completa fino alla sezione successiva"));
         }
 
         return rows
@@ -153,60 +180,288 @@ internal sealed class CervedAdvancedExtractor
                 !IsNoiseName(row.Owner))
             .GroupBy(
                 row =>
-                    $"{row.OwnerFiscalCode}|{row.Percentage}|{Normalize(row.RightType)}",
+                    $"{row.OwnerFiscalCode}|{row.NominalValue}|{row.Percentage}|{Normalize(row.RightType)}",
                 StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
-            .OrderBy(row => ParsePercentage(row.Percentage))
+            .OrderByDescending(row => ParsePercentage(row.Percentage))
+            .ThenBy(row => row.Owner)
             .ToArray();
     }
 
-    private static PageText[] PagesForShareholderTable(
-        CervedRecord record,
-        BookmarkSection bookmark)
-    {
-        int lastPage = Math.Min(
-            record.Pages.Max(page => page.Number),
-            bookmark.StartPage + 2);
+    private sealed record ShareholderSection(string[] Lines);
 
-        return record.Pages
-            .Where(page =>
-                page.Number >= bookmark.StartPage &&
-                page.Number <= lastPage)
-            .OrderBy(page => page.Number)
-            .ToArray();
-    }
+    private sealed record FiscalCodeOccurrence(
+        int LineIndex,
+        int CharacterIndex,
+        string Value,
+        string Line);
 
-    private static string ExtractExactShareholderTableText(
+    private sealed record QuotaOccurrence(
+        int LineIndex,
+        string NominalValue,
+        string Percentage,
+        string RightType);
+
+    private static readonly Regex ShareholderQuotaPattern =
+        new(
+            @"(?<nominal>\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)\s+" +
+            @"(?<percentage>\d{1,3}(?:[\,\.]\d+)?)\s*%\s*" +
+            @"\(?\s*(?<right>NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|" +
+            @"USUFRUTTO|PROPRIETA'|PROPRIETÀ|SOCIO\s+UNICO)\s*\)?",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static ShareholderSection ExtractShareholderSection(
         IReadOnlyList<PageText> pages)
     {
-        string text = string.Join(
-            "\n",
-            pages.Select(page => page.Text));
+        var sourceLines = new List<string>();
 
-        // Usiamo il primo titolo SOCI in maiuscolo a partire dalla pagina
-        // indicata dal segnalibro. Evitiamo il successivo sottotitolo "Soci"
-        // presente nella sezione immobiliare.
-        Match start = Regex.Match(
-            text,
-            @"(?m)^\s*SOCI\s*$");
+        foreach (PageText page in pages)
+        {
+            foreach (string line in page.Text.Split('\n'))
+            {
+                string cleaned = Regex.Replace(line, @"\s{2,}", " ").Trim();
 
-        if (start.Success)
-            text = text[(start.Index + start.Length)..];
+                if (cleaned.Length > 0)
+                    sourceLines.Add(cleaned);
+            }
+        }
 
-        Match end = Regex.Match(
-            text,
-            @"(?m)^\s*(?:" +
-            @"SOCI\s*-\s*CARICHE|" +
-            @"PARTECIPAZIONI\s+DA\s+.*ARCHIVIO\s+SOCI|" +
-            @"PARTECIPAZIONI\s+R\s*ISULTANTI\s+DA\s+B\s*ILANCIO|" +
-            @"INFORMAZIONI\s+IMMOBILIARI" +
-            @")\b",
-            RegexOptions.IgnoreCase);
+        int start = -1;
 
-        if (end.Success)
-            text = text[..end.Index];
+        for (int i = 0; i < sourceLines.Count; i++)
+        {
+            if (Normalize(sourceLines[i]) != "SOCI")
+                continue;
 
-        return text.Trim();
+            bool hasCapitalHeader = sourceLines
+                .Skip(i + 1)
+                .Take(15)
+                .Any(item =>
+                    Normalize(item).StartsWith("CAPITALESOCIALEEURO"));
+
+            if (hasCapitalHeader)
+            {
+                start = i;
+                break;
+            }
+        }
+
+        if (start < 0)
+            return new ShareholderSection([]);
+
+        int end = sourceLines.Count;
+
+        for (int i = start + 1; i < sourceLines.Count; i++)
+        {
+            string normalized = Normalize(sourceLines[i]);
+
+            if (normalized.StartsWith(
+                    "SOCICARICHEQUALIFICHEINALTREIMPRESE"))
+            {
+                end = i;
+                break;
+            }
+
+            // Nei dossier senza SOCI-CARICHE la tabella termina davanti
+            // alla prima sezione principale successiva.
+            if (normalized is
+                "PARTECIPAZIONIDAARCHIVIOSOCI" or
+                "PARTECIPAZIONIRISULTANTIDABILANCIO" or
+                "INFORMAZIONIIMMOBILIARI" or
+                "ATTIVITAECONOMICA")
+            {
+                end = i;
+                break;
+            }
+        }
+
+        return new ShareholderSection(
+            sourceLines.Skip(start).Take(end - start).ToArray());
+    }
+
+    private static FiscalCodeOccurrence? FindFiscalCodeForQuota(
+        IReadOnlyList<FiscalCodeOccurrence> fiscalCodes,
+        int quotaLineIndex)
+    {
+        FiscalCodeOccurrence? sameLine = fiscalCodes
+            .Where(item => item.LineIndex == quotaLineIndex)
+            .OrderBy(item => item.CharacterIndex)
+            .FirstOrDefault();
+
+        if (sameLine is not null)
+            return sameLine;
+
+        FiscalCodeOccurrence? following = fiscalCodes
+            .Where(item =>
+                item.LineIndex > quotaLineIndex &&
+                item.LineIndex <= quotaLineIndex + 5)
+            .OrderBy(item => item.LineIndex)
+            .FirstOrDefault();
+
+        if (following is not null)
+            return following;
+
+        FiscalCodeOccurrence? preceding = fiscalCodes
+            .Where(item =>
+                item.LineIndex < quotaLineIndex &&
+                item.LineIndex >= quotaLineIndex - 5)
+            .OrderByDescending(item => item.LineIndex)
+            .FirstOrDefault();
+
+        if (preceding is not null)
+            return preceding;
+
+        return fiscalCodes
+            .Where(item => Math.Abs(item.LineIndex - quotaLineIndex) <= 12)
+            .OrderBy(item => Math.Abs(item.LineIndex - quotaLineIndex))
+            .ThenBy(item => item.LineIndex < quotaLineIndex ? 1 : 0)
+            .FirstOrDefault();
+    }
+
+    private static string FindOwnerForFiscalCode(
+        IReadOnlyList<string> lines,
+        FiscalCodeOccurrence fiscalCode)
+    {
+        int index = fiscalCode.LineIndex;
+        string line = lines[index];
+        int codePosition = line.IndexOf(
+            fiscalCode.Value,
+            StringComparison.OrdinalIgnoreCase);
+
+        if (codePosition > 0)
+        {
+            string sameLineOwner = CleanOwnerName(line[..codePosition]);
+
+            if (IsPlausibleOwner(sameLineOwner) &&
+                !LooksLikeAddressOrDescription(sameLineOwner))
+            {
+                return IsLegalFormOnly(sameLineOwner)
+                    ? FindCompanyNameBefore(lines, index - 1)
+                    : TrimAfterLegalForm(sameLineOwner);
+            }
+        }
+
+        string company = FindCompanyNameBefore(lines, index);
+
+        if (!string.IsNullOrWhiteSpace(company))
+            return company;
+
+        for (int i = index - 1; i >= Math.Max(0, index - 55); i--)
+        {
+            string candidate = CleanOwnerName(lines[i]);
+
+            if (LooksLikePersonName(candidate) &&
+                !LooksLikeAddressOrDescription(candidate) &&
+                !IsNoiseName(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return "";
+    }
+
+    private static string FindCompanyNameBefore(
+        IReadOnlyList<string> lines,
+        int fromIndex)
+    {
+        for (int i = Math.Min(fromIndex, lines.Count - 1);
+             i >= Math.Max(0, fromIndex - 55);
+             i--)
+        {
+            string candidate = CleanOwnerName(lines[i]);
+
+            if (LooksLikeAddressOrDescription(candidate) ||
+                IsNoiseName(candidate))
+                continue;
+
+            if (ContainsLegalForm(candidate) &&
+                !IsLegalFormOnly(candidate))
+            {
+                return TrimAfterLegalForm(candidate);
+            }
+
+            if (IsLegalFormOnly(candidate))
+            {
+                for (int previous = i - 1;
+                     previous >= Math.Max(0, i - 4);
+                     previous--)
+                {
+                    string name = CleanOwnerName(lines[previous]);
+
+                    if (!string.IsNullOrWhiteSpace(name) &&
+                        !LooksLikeAddressOrDescription(name) &&
+                        !IsNoiseName(name) &&
+                        !FiscalCodePattern.IsMatch(name) &&
+                        !PercentagePattern.IsMatch(name))
+                    {
+                        return name;
+                    }
+                }
+            }
+
+            bool legalFormFollows = lines
+                .Skip(i + 1)
+                .Take(Math.Min(4, lines.Count - i - 1))
+                .Any(IsLegalFormOnly);
+
+            if (legalFormFollows &&
+                !string.IsNullOrWhiteSpace(candidate) &&
+                !FiscalCodePattern.IsMatch(candidate) &&
+                !PercentagePattern.IsMatch(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return "";
+    }
+
+    private static bool IsLegalFormOnly(string value)
+    {
+        string normalized = Normalize(value);
+
+        return normalized is
+            "SOCIETAPERAZIONI" or
+            "SOCIETAARESPONSABILITALIMITATA" or
+            "SOCIETASEMPLICE" or
+            "SOCIETAINNOMECOLLETTIVO" or
+            "SOCIETAINACCOMANDITASEMPLICE";
+    }
+
+    private static bool LooksLikeAddressOrDescription(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return true;
+
+        string normalized = Normalize(value);
+
+        string[] forbidden =
+        [
+            "VIA", "VIALE", "PIAZZA", "CONTRADA", "CORSO", "LOCALITA",
+            "CAP", "RIFERIMENTO", "NREA", "LUOGODINASCITA", "DATADINASCITA",
+            "INDIRIZZISTORICI", "SITUAZIONEIMPRESA", "ATTIVITA",
+            "CAPITALESOCIALE", "INTERROGAZIONI", "IMPRESAAPPARTENENTE",
+            "CAPOGRUPPO", "CODICERAE", "CODICESAE", "DATAATTO",
+            "DATADEPOSITO", "DATAPROTOCOLLO", "NUMEROPROTOCOLLO",
+            "SOCIOOBENEFICIARIO", "TIPODIRITTO", "QUOTE"
+        ];
+
+        return value.Contains(':') ||
+               forbidden.Any(item => normalized.StartsWith(item));
+    }
+
+    private static string BuildShareholderEvidence(
+        IReadOnlyList<string> lines,
+        int quotaLine,
+        int fiscalCodeLine)
+    {
+        int from = Math.Max(0, Math.Min(quotaLine, fiscalCodeLine) - 12);
+        int to = Math.Min(
+            lines.Count,
+            Math.Max(quotaLine, fiscalCodeLine) + 8);
+
+        return string.Join(" | ", lines.Skip(from).Take(to - from));
     }
 
     private static ShareholderRow CreateShareholderRow(
@@ -252,67 +507,31 @@ internal sealed class CervedAdvancedExtractor
                 lineStart,
                 valueIndex - lineStart));
 
-        if (IsPlausibleOwner(sameLinePrefix) &&
-            !LooksLikeAddressContamination(sameLinePrefix))
-        {
+        if (IsPlausibleOwner(sameLinePrefix))
             return ContainsLegalForm(sameLinePrefix)
                 ? TrimAfterLegalForm(sameLinePrefix)
                 : sameLinePrefix;
-        }
 
-        int windowStart = Math.Max(0, valueIndex - 7000);
+        int windowStart = Math.Max(0, valueIndex - 900);
         string before = sectionText.Substring(
             windowStart,
             valueIndex - windowStart);
 
         string[] previousLines = Lines(before);
 
-        // Prima cerchiamo una denominazione societaria completa.
         for (int i = previousLines.Length - 1;
-             i >= Math.Max(0, previousLines.Length - 90);
+             i >= Math.Max(0, previousLines.Length - 15);
              i--)
         {
             string candidate = CleanOwnerName(previousLines[i]);
 
-            if (ContainsLegalForm(candidate) &&
-                IsPlausibleOwner(candidate) &&
-                !LooksLikeAddressContamination(candidate))
-            {
-                return TrimAfterLegalForm(candidate);
-            }
-        }
-
-        // Se non è una società, cerchiamo il nominativo della persona.
-        for (int i = previousLines.Length - 1;
-             i >= Math.Max(0, previousLines.Length - 90);
-             i--)
-        {
-            string candidate = CleanOwnerName(previousLines[i]);
-
-            if (LooksLikePersonName(candidate) &&
-                !IsNoiseName(candidate) &&
-                !LooksLikeAddressContamination(candidate))
-            {
-                return candidate;
-            }
+            if (IsPlausibleOwner(candidate))
+                return ContainsLegalForm(candidate)
+                    ? TrimAfterLegalForm(candidate)
+                    : candidate;
         }
 
         return "";
-    }
-
-    private static bool LooksLikeAddressContamination(string value)
-    {
-        string normalized = Normalize(value);
-
-        return normalized.Contains("VIA") ||
-               normalized.Contains("VIALE") ||
-               normalized.Contains("PIAZZA") ||
-               normalized.Contains("CONTRADA") ||
-               normalized.Contains("CAP") ||
-               normalized.Contains("NREA") ||
-               normalized.Contains("LUOGODINASCITA") ||
-               normalized.Contains("INDIRIZZISTORICI") ||
-               normalized.Contains("PRESSOLASOCIETA");
     }
 
     private static bool IsPlausibleOwner(string value)
@@ -779,13 +998,7 @@ internal sealed class CervedAdvancedExtractor
             "INTERROGAZIONISUCERVEDGROUP",
             "ATTIVITA",
             "SITUAZIONEIMPRESA",
-            "CAPOGRUPPO",
-            "QUOTEQUOTE",
-            "TIPODIRITTO",
-            "CODICEFISCALE",
-            "NREACODICEFISCALE",
-            "SOCIETAPERAZIONI",
-            "SOCIETAARESPONSABILITALIMITATA"
+            "CAPOGRUPPO"
         ];
 
         return noise.Any(item =>
