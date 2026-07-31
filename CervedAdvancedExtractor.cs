@@ -98,9 +98,6 @@ internal sealed class CervedAdvancedExtractor
         if (bookmark is null)
             return [];
 
-        // La tabella SOCI può proseguire per un numero variabile di pagine.
-        // Si parte dalla pagina del segnalibro e si continua fino al titolo
-        // SOCI - CARICHE / QUALIFICHE IN ALTRE IMPRESE.
         PageText[] pages = record.Pages
             .Where(page => page.Number >= bookmark.StartPage)
             .OrderBy(page => page.Number)
@@ -111,47 +108,47 @@ internal sealed class CervedAdvancedExtractor
         if (section.Lines.Length == 0)
             return [];
 
-        var fiscalCodes = new List<FiscalCodeOccurrence>();
-        var quotas = new List<QuotaOccurrence>();
-
-        for (int i = 0; i < section.Lines.Length; i++)
-        {
-            string line = section.Lines[i];
-
-            foreach (Match match in FiscalCodePattern.Matches(line))
-            {
-                fiscalCodes.Add(new FiscalCodeOccurrence(
-                    i,
-                    match.Index,
-                    match.Value.ToUpperInvariant(),
-                    line));
-            }
-
-            string window = string.Join(
-                " ",
-                section.Lines.Skip(i).Take(4));
-
-            foreach (Match match in ShareholderQuotaPattern.Matches(window))
-            {
-                quotas.Add(new QuotaOccurrence(
-                    i,
-                    match.Groups["nominal"].Value,
-                    match.Groups["percentage"].Value,
-                    NormalizeRight(match.Groups["right"].Value)));
-            }
-        }
-
         var rows = new List<ShareholderRow>();
 
-        foreach (QuotaOccurrence quota in quotas)
+        /*
+         * Regola fondamentale v3.16:
+         * ogni riga della tabella può generare al massimo un socio.
+         *
+         * Il parser precedente costruiva finestre sovrapposte di quattro
+         * righe e poi cercava il codice fiscale più vicino. La stessa quota
+         * poteva quindi essere intercettata più volte e attribuita anche al
+         * socio precedente.
+         *
+         * Nei DOSSIER TOP verificati, il blocco stabile della riga finale è:
+         * CF/P.IVA + valore nominale + percentuale + tipo diritto.
+         * Il nome può trovarsi sulla stessa riga oppure nel blocco societario
+         * immediatamente precedente.
+         */
+        for (int lineIndex = 0;
+             lineIndex < section.Lines.Length;
+             lineIndex++)
         {
-            FiscalCodeOccurrence? fiscalCode =
-                FindFiscalCodeForQuota(fiscalCodes, quota.LineIndex);
+            string line = section.Lines[lineIndex];
+            Match match = CompleteShareholderRowPattern.Match(line);
 
-            if (fiscalCode is null)
+            if (!match.Success)
                 continue;
 
-            string owner = FindOwnerForFiscalCode(section.Lines, fiscalCode);
+            string fiscalCode =
+                match.Groups["fiscalCode"].Value.ToUpperInvariant();
+            string nominal = match.Groups["nominal"].Value;
+            string percentage = match.Groups["percentage"].Value;
+            string right = NormalizeRight(match.Groups["right"].Value);
+
+            var occurrence = new FiscalCodeOccurrence(
+                lineIndex,
+                match.Groups["fiscalCode"].Index,
+                fiscalCode,
+                line);
+
+            string owner = FindOwnerForFiscalCode(
+                section.Lines,
+                occurrence);
 
             if (string.IsNullOrWhiteSpace(owner))
                 continue;
@@ -161,15 +158,15 @@ internal sealed class CervedAdvancedExtractor
                 bookmark,
                 pages,
                 owner,
-                fiscalCode.Value,
-                quota.Percentage,
-                quota.NominalValue,
-                quota.RightType,
+                fiscalCode,
+                percentage,
+                nominal,
+                right,
                 BuildShareholderEvidence(
                     section.Lines,
-                    quota.LineIndex,
-                    fiscalCode.LineIndex),
-                "Segnalibro SOCI + lettura completa fino alla sezione successiva"));
+                    lineIndex,
+                    lineIndex),
+                "Segnalibro SOCI + record completo sulla singola riga"));
         }
 
         return rows
@@ -180,7 +177,8 @@ internal sealed class CervedAdvancedExtractor
                 !IsNoiseName(row.Owner))
             .GroupBy(
                 row =>
-                    $"{row.OwnerFiscalCode}|{row.NominalValue}|{row.Percentage}|{Normalize(row.RightType)}",
+                    $"{row.OwnerFiscalCode}|{row.NominalValue}|" +
+                    $"{row.Percentage}|{Normalize(row.RightType)}",
                 StringComparer.OrdinalIgnoreCase)
             .Select(group => group.First())
             .OrderByDescending(row => ParsePercentage(row.Percentage))
@@ -196,18 +194,18 @@ internal sealed class CervedAdvancedExtractor
         string Value,
         string Line);
 
-    private sealed record QuotaOccurrence(
-        int LineIndex,
-        string NominalValue,
-        string Percentage,
-        string RightType);
 
-    private static readonly Regex ShareholderQuotaPattern =
+    private static readonly Regex CompleteShareholderRowPattern =
         new(
+            @"(?<fiscalCode>" +
+            @"[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]" +
+            @"|\d{11})\s+" +
             @"(?<nominal>\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)\s+" +
             @"(?<percentage>\d{1,3}(?:[\,\.]\d+)?)\s*%\s*" +
-            @"\(?\s*(?<right>NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|" +
-            @"USUFRUTTO|PROPRIETA'|PROPRIETÀ|SOCIO\s+UNICO)\s*\)?",
+            @"\(?\s*(?<right>" +
+            @"NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|" +
+            @"USUFRUTTO|PROPRIETA'|PROPRIETÀ|SOCIO\s+UNICO" +
+            @")\s*\)?",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static ShareholderSection ExtractShareholderSection(
@@ -277,45 +275,6 @@ internal sealed class CervedAdvancedExtractor
 
         return new ShareholderSection(
             sourceLines.Skip(start).Take(end - start).ToArray());
-    }
-
-    private static FiscalCodeOccurrence? FindFiscalCodeForQuota(
-        IReadOnlyList<FiscalCodeOccurrence> fiscalCodes,
-        int quotaLineIndex)
-    {
-        FiscalCodeOccurrence? sameLine = fiscalCodes
-            .Where(item => item.LineIndex == quotaLineIndex)
-            .OrderBy(item => item.CharacterIndex)
-            .FirstOrDefault();
-
-        if (sameLine is not null)
-            return sameLine;
-
-        FiscalCodeOccurrence? following = fiscalCodes
-            .Where(item =>
-                item.LineIndex > quotaLineIndex &&
-                item.LineIndex <= quotaLineIndex + 5)
-            .OrderBy(item => item.LineIndex)
-            .FirstOrDefault();
-
-        if (following is not null)
-            return following;
-
-        FiscalCodeOccurrence? preceding = fiscalCodes
-            .Where(item =>
-                item.LineIndex < quotaLineIndex &&
-                item.LineIndex >= quotaLineIndex - 5)
-            .OrderByDescending(item => item.LineIndex)
-            .FirstOrDefault();
-
-        if (preceding is not null)
-            return preceding;
-
-        return fiscalCodes
-            .Where(item => Math.Abs(item.LineIndex - quotaLineIndex) <= 12)
-            .OrderBy(item => Math.Abs(item.LineIndex - quotaLineIndex))
-            .ThenBy(item => item.LineIndex < quotaLineIndex ? 1 : 0)
-            .FirstOrDefault();
     }
 
     private static string FindOwnerForFiscalCode(
