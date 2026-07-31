@@ -239,7 +239,10 @@ internal sealed class ExcelExporter
             decimal adjusted = gross - usufruct;
 
             bool idPresent = !string.IsNullOrWhiteSpace(companyId);
-            bool quotesOk = companyRows.Count > 0 &&
+            bool hasShareholderBookmark = record.BookmarkSections.Any(section =>
+                NormalizeText(section.Title) == "SOCI");
+            bool quotesOk = hasShareholderBookmark &&
+                            companyRows.Count > 0 &&
                             Math.Abs(adjusted - 100m) <= 0.01m;
 
             ShareholderRow? diagnostic = companyRows
@@ -265,7 +268,12 @@ internal sealed class ExcelExporter
             ws.Cell(row, 5).Value = usufruct;
             ws.Cell(row, 6).Value = bareOwnership;
             ws.Cell(row, 7).Value = adjusted;
-            ws.Cell(row, 8).Value = quotesOk ? "OK" : "ATTENZIONE";
+            ws.Cell(row, 8).Value =
+                !hasShareholderBookmark
+                    ? "NON APPLICABILE"
+                    : quotesOk
+                        ? "OK"
+                        : "ATTENZIONE";
             ws.Cell(row, 9).Value = companyRows.Count;
             ws.Cell(row, 10).Value = idPresent ? "OK" : "MANCANTE";
             ws.Cell(row, 11).Value = hasBalance ? "SI" : "NO";
@@ -274,16 +282,18 @@ internal sealed class ExcelExporter
             ws.Cell(row, 14).Value = diagnostic?.Page ?? 0;
             ws.Cell(row, 15).Value = diagnostic?.Method ?? "";
             ws.Cell(row, 16).Value = Safe(
-                quotesOk
-                    ? "Controllo quote superato."
-                    : BuildDiagnosticEvidence(
+                !hasShareholderBookmark
+                    ? "Il dossier non contiene un segnalibro SOCI: controllo quote non applicabile."
+                    : quotesOk
+                        ? "Controllo quote superato."
+                        : BuildDiagnosticEvidence(
                         companyRows,
                         gross,
                         usufruct,
                         bareOwnership,
                         adjusted));
 
-            if (!quotesOk || !idPresent)
+            if ((hasShareholderBookmark && !quotesOk) || !idPresent)
             {
                 ws.Range(row, 1, row, headers.Length)
                     .Style.Fill.BackgroundColor = XLColor.LightPink;
