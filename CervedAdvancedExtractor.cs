@@ -98,11 +98,10 @@ internal sealed class CervedAdvancedExtractor
         if (bookmark is null)
             return [];
 
-        // Il confine primario e' quello calcolato dai segnalibri: dalla
-        // voce SOCI fino alla voce successiva. La ricerca dei titoli nel
-        // testo, eseguita da ExtractShareholderSection, resta un secondo
-        // livello di protezione per i PDF con outline impreciso.
-        PageText[] pages = PagesInside(record, bookmark)
+        // Il bookmark SOCI indica l'inizio della sezione. La tabella puo'
+        // continuare sulla pagina puntata dal bookmark successivo: quella
+        // pagina va inclusa e poi ritagliata sul titolo della nuova sezione.
+        PageText[] pages = ShareholderPages(record, bookmark)
             .OrderBy(page => page.Number)
             .ToArray();
 
@@ -114,7 +113,7 @@ internal sealed class CervedAdvancedExtractor
         var rows = new List<ShareholderRow>();
 
         /*
-         * Regola fondamentale v3.17: SOCI viene letto per record logici.
+         * Regola fondamentale v3.18: SOCI viene letto per record logici.
          * Nei dossier Cerved la quota e la P.IVA di un socio-societa' sono
          * spesso su righe diverse; per le persone, invece, possono essere
          * sulla stessa riga. Ogni occorrenza quota-percentuale-diritto apre
@@ -994,6 +993,61 @@ internal sealed class CervedAdvancedExtractor
         record.Pages
             .Where(page => bookmark.ContainsPage(page.Number))
             .ToArray();
+
+    private static PageText[] ShareholderPages(
+        CervedRecord record,
+        BookmarkSection shareholderBookmark)
+    {
+        int startPage = shareholderBookmark.StartPage;
+
+        // La pagina del bookmark successivo e' intenzionalmente inclusa:
+        // Cerved vi colloca spesso la continuazione della tabella SOCI.
+        int? boundaryPage = record.BookmarkSections
+            .Where(section =>
+                !ReferenceEquals(section, shareholderBookmark) &&
+                section.StartPage >= startPage &&
+                IsShareholderEndBookmark(section.Title))
+            .OrderBy(section => section.StartPage)
+            .ThenBy(section => EndBookmarkPriority(section.Title))
+            .Select(section => (int?)section.StartPage)
+            .FirstOrDefault();
+
+        int lastDocumentPage = record.Pages.Count == 0
+            ? startPage
+            : record.Pages.Max(page => page.Number);
+        int endPage = boundaryPage ?? Math.Min(lastDocumentPage, startPage + 3);
+
+        return record.Pages
+            .Where(page =>
+                page.Number >= startPage &&
+                page.Number <= endPage)
+            .ToArray();
+    }
+
+    private static bool IsShareholderEndBookmark(string title)
+    {
+        string normalized = Normalize(title);
+
+        return normalized.StartsWith("SOCICARICHEQUALIFICHEINALTREIMPRESE") ||
+               normalized.StartsWith("PARTECIPAZIONIDAARCHIVIOSOCI") ||
+               normalized.StartsWith("PARTECIPAZIONIRISULTANTIDABILANCIO") ||
+               normalized.StartsWith("INFORMAZIONIIMMOBILIARI") ||
+               normalized.StartsWith("ATTIVITAECONOMICA");
+    }
+
+    private static int EndBookmarkPriority(string title)
+    {
+        string normalized = Normalize(title);
+
+        if (normalized.StartsWith("SOCICARICHEQUALIFICHEINALTREIMPRESE"))
+            return 0;
+        if (normalized.StartsWith("PARTECIPAZIONIDAARCHIVIOSOCI"))
+            return 1;
+        if (normalized.StartsWith("PARTECIPAZIONIRISULTANTIDABILANCIO"))
+            return 2;
+
+        return 3;
+    }
 
     private static string FindPersonNameBefore(
         IReadOnlyList<string> lines,
