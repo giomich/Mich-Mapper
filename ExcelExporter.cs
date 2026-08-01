@@ -72,7 +72,7 @@ internal sealed class ExcelExporter
             ws.Cell(row, 5).Value = record.Nome.Value;
             ws.Cell(row, 6).Value = record.PartitaIva.Value;
             ws.Cell(row, 7).Value = record.CodiceFiscale.Value;
-            ws.Cell(row, 8).Value = Safe(record.AttivitaEconomica.Value);
+            ws.Cell(row, 8).Value = Safe(CervedFieldResolver.GetAttivitaEconomica(record));
             ws.Cell(row, 9).Value = record.FormaGiuridica.Value;
             ws.Cell(row, 10).Value = record.SituazioneImpresa.Value;
             ws.Cell(row, 11).Value = record.Rea.Value;
@@ -246,6 +246,10 @@ internal sealed class ExcelExporter
             bool quotesOk = companyRows.Count > 0 &&
                             Math.Abs(adjusted - 100m) <= 0.01m;
 
+            bool hasSociSection = record.BookmarkSections.Any(section =>
+                NormalizeText(section.Title) == "SOCI");
+            bool notApplicable = companyRows.Count == 0 && !hasSociSection;
+
             ShareholderRow? diagnostic = companyRows
                 .FirstOrDefault(item =>
                     string.IsNullOrWhiteSpace(item.OwnerFiscalCode) ||
@@ -269,7 +273,9 @@ internal sealed class ExcelExporter
             ws.Cell(row, 5).Value = bareOwnership;
             ws.Cell(row, 6).Value = usufruct;
             ws.Cell(row, 7).Value = adjusted;
-            ws.Cell(row, 8).Value = quotesOk ? "OK" : "ATTENZIONE";
+            ws.Cell(row, 8).Value = notApplicable
+                ? "NON PRESENTE/NON APPLICABILE"
+                : quotesOk ? "OK" : "ATTENZIONE";
             ws.Cell(row, 9).Value = companyRows.Count;
             ws.Cell(row, 10).Value = idPresent ? "OK" : "MANCANTE";
             ws.Cell(row, 11).Value = hasBalance ? "SI" : "NO";
@@ -278,7 +284,9 @@ internal sealed class ExcelExporter
             ws.Cell(row, 14).Value = diagnostic?.Page ?? 0;
             ws.Cell(row, 15).Value = diagnostic?.Method ?? "";
             ws.Cell(row, 16).Value = Safe(
-                quotesOk
+                notApplicable
+                    ? "Il dossier non contiene la sezione SOCI. Nessun errore di estrazione."
+                    : quotesOk
                     ? "Controllo quote superato."
                     : BuildDiagnosticEvidence(
                         companyRows,
@@ -287,7 +295,7 @@ internal sealed class ExcelExporter
                         bareOwnership,
                         adjusted));
 
-            if (!quotesOk || !idPresent)
+            if ((!quotesOk && !notApplicable) || !idPresent)
             {
                 ws.Range(row, 1, row, headers.Length)
                     .Style.Fill.BackgroundColor = XLColor.LightPink;
@@ -441,7 +449,8 @@ internal sealed class ExcelExporter
                 "Codice fiscale", record.CodiceFiscale);
 
             AddEvidence(ws, ref row, record.SourceFile,
-                "Attività economica", record.AttivitaEconomica);
+                "Attività economica", record.AttivitaEconomica,
+                CervedFieldResolver.GetAttivitaEconomica(record));
 
             AddEvidence(ws, ref row, record.SourceFile,
                 "Forma giuridica", record.FormaGiuridica);

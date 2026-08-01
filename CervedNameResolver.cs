@@ -43,6 +43,14 @@ internal static class CervedNameResolver
                 normalized.StartsWith("PRODOTTOIL"))
                 continue;
 
+            // L'intestazione Cerved può essere preceduta da caratteri grafici
+            // illeggibili: la prima riga completa con forma giuridica è il
+            // riferimento più affidabile.
+            if (ContainsLegalForm(line) &&
+                !normalized.Contains("FORMA GIURIDICA") &&
+                !normalized.Contains("DENOMINAZIONE"))
+                return line;
+
             result.Add(line);
         }
 
@@ -82,6 +90,11 @@ internal static class CervedNameResolver
                 }
 
                 string value = Clean(string.Join(" ", parts));
+                int sigla = value.IndexOf(
+                    "Sigla della denominazione",
+                    StringComparison.OrdinalIgnoreCase);
+                if (sigla >= 0)
+                    value = Clean(value[..sigla]);
                 if (ContainsLegalForm(value))
                     return value;
             }
