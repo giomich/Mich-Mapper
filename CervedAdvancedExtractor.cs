@@ -98,8 +98,11 @@ internal sealed class CervedAdvancedExtractor
         if (bookmark is null)
             return [];
 
-        PageText[] pages = record.Pages
-            .Where(page => page.Number >= bookmark.StartPage)
+        // Il confine primario e' quello calcolato dai segnalibri: dalla
+        // voce SOCI fino alla voce successiva. La ricerca dei titoli nel
+        // testo, eseguita da ExtractShareholderSection, resta un secondo
+        // livello di protezione per i PDF con outline impreciso.
+        PageText[] pages = PagesInside(record, bookmark)
             .OrderBy(page => page.Number)
             .ToArray();
 
@@ -111,44 +114,34 @@ internal sealed class CervedAdvancedExtractor
         var rows = new List<ShareholderRow>();
 
         /*
-         * Regola fondamentale v3.16:
-         * ogni riga della tabella può generare al massimo un socio.
-         *
-         * Il parser precedente costruiva finestre sovrapposte di quattro
-         * righe e poi cercava il codice fiscale più vicino. La stessa quota
-         * poteva quindi essere intercettata più volte e attribuita anche al
-         * socio precedente.
-         *
-         * Nei DOSSIER TOP verificati, il blocco stabile della riga finale è:
-         * CF/P.IVA + valore nominale + percentuale + tipo diritto.
-         * Il nome può trovarsi sulla stessa riga oppure nel blocco societario
-         * immediatamente precedente.
+         * Regola fondamentale v3.17: SOCI viene letto per record logici.
+         * Nei dossier Cerved la quota e la P.IVA di un socio-societa' sono
+         * spesso su righe diverse; per le persone, invece, possono essere
+         * sulla stessa riga. Ogni occorrenza quota-percentuale-diritto apre
+         * un solo record e riceve il CF/P.IVA migliore nel proprio blocco.
          */
-        for (int lineIndex = 0;
-             lineIndex < section.Lines.Length;
-             lineIndex++)
+        IReadOnlyList<QuotaOccurrence> quotas = FindQuotaOccurrences(
+            section.Lines);
+
+        for (int quotaIndex = 0; quotaIndex < quotas.Count; quotaIndex++)
         {
-            string line = section.Lines[lineIndex];
-            Match match = CompleteShareholderRowPattern.Match(line);
+            QuotaOccurrence quota = quotas[quotaIndex];
+            ShareholderBlock block = BuildShareholderBlock(
+                section.Lines,
+                quotas,
+                quotaIndex);
+            FiscalCodeOccurrence? fiscalCode = FindFiscalCodeForQuota(
+                section.Lines,
+                block,
+                quota);
 
-            if (!match.Success)
+            if (fiscalCode is null)
                 continue;
-
-            string fiscalCode =
-                match.Groups["fiscalCode"].Value.ToUpperInvariant();
-            string nominal = match.Groups["nominal"].Value;
-            string percentage = match.Groups["percentage"].Value;
-            string right = NormalizeRight(match.Groups["right"].Value);
-
-            var occurrence = new FiscalCodeOccurrence(
-                lineIndex,
-                match.Groups["fiscalCode"].Index,
-                fiscalCode,
-                line);
 
             string owner = FindOwnerForFiscalCode(
                 section.Lines,
-                occurrence);
+                fiscalCode,
+                block);
 
             if (string.IsNullOrWhiteSpace(owner))
                 continue;
@@ -158,15 +151,15 @@ internal sealed class CervedAdvancedExtractor
                 bookmark,
                 pages,
                 owner,
-                fiscalCode,
-                percentage,
-                nominal,
-                right,
+                fiscalCode.Value,
+                quota.Percentage,
+                quota.Nominal,
+                quota.Right,
                 BuildShareholderEvidence(
                     section.Lines,
-                    lineIndex,
-                    lineIndex),
-                "Segnalibro SOCI + record completo sulla singola riga"));
+                    block.StartLine,
+                    block.EndLine),
+                "Segnalibro SOCI + record logico per socio"));
         }
 
         return rows
@@ -194,12 +187,21 @@ internal sealed class CervedAdvancedExtractor
         string Value,
         string Line);
 
+    private sealed record QuotaOccurrence(
+        int LineIndex,
+        int CharacterIndex,
+        string Nominal,
+        string Percentage,
+        string Right,
+        string Line);
 
-    private static readonly Regex CompleteShareholderRowPattern =
+    private sealed record ShareholderBlock(
+        int StartLine,
+        int EndLine);
+
+
+    private static readonly Regex QuotaRowPattern =
         new(
-            @"(?<fiscalCode>" +
-            @"[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]" +
-            @"|\d{11})\s+" +
             @"(?<nominal>\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)\s+" +
             @"(?<percentage>\d{1,3}(?:[\,\.]\d+)?)\s*%\s*" +
             @"\(?\s*(?<right>" +
@@ -207,6 +209,95 @@ internal sealed class CervedAdvancedExtractor
             @"USUFRUTTO|PROPRIETA'|PROPRIETÀ|SOCIO\s+UNICO" +
             @")\s*\)?",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    private static IReadOnlyList<QuotaOccurrence> FindQuotaOccurrences(
+        IReadOnlyList<string> lines)
+    {
+        var result = new List<QuotaOccurrence>();
+
+        for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
+        {
+            foreach (Match match in QuotaRowPattern.Matches(lines[lineIndex]))
+            {
+                result.Add(new QuotaOccurrence(
+                    lineIndex,
+                    match.Index,
+                    match.Groups["nominal"].Value,
+                    match.Groups["percentage"].Value,
+                    NormalizeRight(match.Groups["right"].Value),
+                    lines[lineIndex]));
+            }
+        }
+
+        return result;
+    }
+
+    private static ShareholderBlock BuildShareholderBlock(
+        IReadOnlyList<string> lines,
+        IReadOnlyList<QuotaOccurrence> quotas,
+        int quotaIndex)
+    {
+        QuotaOccurrence current = quotas[quotaIndex];
+        int previousLine = quotaIndex == 0
+            ? 0
+            : quotas[quotaIndex - 1].LineIndex;
+        int nextLine = quotaIndex == quotas.Count - 1
+            ? lines.Count - 1
+            : quotas[quotaIndex + 1].LineIndex;
+
+        int start = quotaIndex == 0
+            ? Math.Max(0, current.LineIndex - 45)
+            : Math.Min(current.LineIndex, previousLine + 1);
+        int end = quotaIndex == quotas.Count - 1
+            ? Math.Min(lines.Count - 1, current.LineIndex + 18)
+            : Math.Min(lines.Count - 1, nextLine - 1);
+
+        return new ShareholderBlock(start, Math.Max(start, end));
+    }
+
+    private static FiscalCodeOccurrence? FindFiscalCodeForQuota(
+        IReadOnlyList<string> lines,
+        ShareholderBlock block,
+        QuotaOccurrence quota)
+    {
+        var candidates = new List<(FiscalCodeOccurrence Item, int Score)>();
+        int from = Math.Max(block.StartLine, quota.LineIndex - 18);
+        int to = Math.Min(block.EndLine, quota.LineIndex + 6);
+
+        for (int lineIndex = from; lineIndex <= to; lineIndex++)
+        {
+            foreach (Match match in FiscalCodePattern.Matches(lines[lineIndex]))
+            {
+                string value = match.Value.ToUpperInvariant();
+                int distance = Math.Abs(lineIndex - quota.LineIndex);
+                int score = 100 - (distance * 10);
+
+                if (lineIndex == quota.LineIndex)
+                    score += 100;
+                else if (lineIndex > quota.LineIndex)
+                    score += 35;
+
+                if (value.All(char.IsDigit) &&
+                    lineIndex >= quota.LineIndex)
+                    score += 30;
+
+                candidates.Add((
+                    new FiscalCodeOccurrence(
+                        lineIndex,
+                        match.Index,
+                        value,
+                        lines[lineIndex]),
+                    score));
+            }
+        }
+
+        return candidates
+            .OrderByDescending(candidate => candidate.Score)
+            .ThenBy(candidate =>
+                Math.Abs(candidate.Item.LineIndex - quota.LineIndex))
+            .Select(candidate => candidate.Item)
+            .FirstOrDefault();
+    }
 
     private static ShareholderSection ExtractShareholderSection(
         IReadOnlyList<PageText> pages)
@@ -279,7 +370,8 @@ internal sealed class CervedAdvancedExtractor
 
     private static string FindOwnerForFiscalCode(
         IReadOnlyList<string> lines,
-        FiscalCodeOccurrence fiscalCode)
+        FiscalCodeOccurrence fiscalCode,
+        ShareholderBlock block)
     {
         int index = fiscalCode.LineIndex;
         string line = lines[index];
@@ -295,17 +387,25 @@ internal sealed class CervedAdvancedExtractor
                 !LooksLikeAddressOrDescription(sameLineOwner))
             {
                 return IsLegalFormOnly(sameLineOwner)
-                    ? FindCompanyNameBefore(lines, index - 1)
+                    ? FindCompanyNameBefore(
+                        lines,
+                        index - 1,
+                        block.StartLine)
                     : TrimAfterLegalForm(sameLineOwner);
             }
         }
 
-        string company = FindCompanyNameBefore(lines, index);
+        string company = FindCompanyNameBefore(
+            lines,
+            index,
+            block.StartLine);
 
         if (!string.IsNullOrWhiteSpace(company))
             return company;
 
-        for (int i = index - 1; i >= Math.Max(0, index - 55); i--)
+        for (int i = index - 1;
+             i >= Math.Max(block.StartLine, index - 55);
+             i--)
         {
             string candidate = CleanOwnerName(lines[i]);
 
@@ -322,10 +422,11 @@ internal sealed class CervedAdvancedExtractor
 
     private static string FindCompanyNameBefore(
         IReadOnlyList<string> lines,
-        int fromIndex)
+        int fromIndex,
+        int minimumIndex = 0)
     {
         for (int i = Math.Min(fromIndex, lines.Count - 1);
-             i >= Math.Max(0, fromIndex - 55);
+             i >= Math.Max(minimumIndex, fromIndex - 55);
              i--)
         {
             string candidate = CleanOwnerName(lines[i]);
@@ -343,7 +444,7 @@ internal sealed class CervedAdvancedExtractor
             if (IsLegalFormOnly(candidate))
             {
                 for (int previous = i - 1;
-                     previous >= Math.Max(0, i - 4);
+                     previous >= Math.Max(minimumIndex, i - 4);
                      previous--)
                 {
                     string name = CleanOwnerName(lines[previous]);
