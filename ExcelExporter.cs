@@ -236,7 +236,10 @@ internal sealed class ExcelExporter
             decimal bareOwnership = companyRows
                 .Where(item => NormalizeText(item.RightType).Contains("NUDA PROPRIETA"))
                 .Sum(item => ParsePercentage(item.Percentage));
-            decimal adjusted = gross - usufruct;
+            decimal fullOwnership = companyRows
+                .Where(item => NormalizeText(item.RightType) == "PROPRIETA")
+                .Sum(item => ParsePercentage(item.Percentage));
+            decimal adjusted = fullOwnership + bareOwnership - usufruct;
 
             bool idPresent = !string.IsNullOrWhiteSpace(companyId);
             bool quotesOk = companyRows.Count > 0 &&

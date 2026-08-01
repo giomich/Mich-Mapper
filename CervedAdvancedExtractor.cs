@@ -113,7 +113,7 @@ internal sealed class CervedAdvancedExtractor
         var rows = new List<ShareholderRow>();
 
         /*
-         * Regola fondamentale v3.18: SOCI viene letto per record logici.
+         * Regola fondamentale v3.19: SOCI viene letto per record logici.
          * Nei dossier Cerved la quota e la P.IVA di un socio-societa' sono
          * spesso su righe diverse; per le persone, invece, possono essere
          * sulla stessa riga. Ogni occorrenza quota-percentuale-diritto apre
@@ -199,14 +199,10 @@ internal sealed class CervedAdvancedExtractor
         int EndLine);
 
 
-    private static readonly Regex QuotaRowPattern =
+    private static readonly Regex QuotaValuePattern =
         new(
             @"(?<nominal>\d{1,3}(?:\.\d{3})*(?:,\d{1,2})?)\s+" +
-            @"(?<percentage>\d{1,3}(?:[\,\.]\d+)?)\s*%\s*" +
-            @"\(?\s*(?<right>" +
-            @"NUDA\s+PROPRIETA'|NUDA\s+PROPRIETÀ|" +
-            @"USUFRUTTO|PROPRIETA'|PROPRIETÀ|SOCIO\s+UNICO" +
-            @")\s*\)?",
+            @"(?<percentage>\d{1,3}(?:[\,\.]\d+)?)\s*%",
             RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static IReadOnlyList<QuotaOccurrence> FindQuotaOccurrences(
@@ -216,19 +212,60 @@ internal sealed class CervedAdvancedExtractor
 
         for (int lineIndex = 0; lineIndex < lines.Count; lineIndex++)
         {
-            foreach (Match match in QuotaRowPattern.Matches(lines[lineIndex]))
+            foreach (Match match in QuotaValuePattern.Matches(lines[lineIndex]))
             {
+                string right = FindRightForQuota(lines, lineIndex, match);
+
+                if (string.IsNullOrWhiteSpace(right))
+                    continue;
+
                 result.Add(new QuotaOccurrence(
                     lineIndex,
                     match.Index,
                     match.Groups["nominal"].Value,
                     match.Groups["percentage"].Value,
-                    NormalizeRight(match.Groups["right"].Value),
+                    right,
                     lines[lineIndex]));
             }
         }
 
         return result;
+    }
+
+    private static string FindRightForQuota(
+        IReadOnlyList<string> lines,
+        int lineIndex,
+        Match quotaMatch)
+    {
+        string sameLineTail = lines[lineIndex][quotaMatch.Index..];
+        string normalizedTail = Normalize(sameLineTail);
+
+        if (normalizedTail.Contains("NUDAPROPRIETA"))
+            return "Nuda proprietà";
+        if (normalizedTail.Contains("USUFRUTTO"))
+            return "Usufrutto";
+        if (normalizedTail.Contains("SOCIOUNICO"))
+            return "Socio unico";
+        if (normalizedTail.Contains("PROPRIETA"))
+            return "Proprietà";
+
+        // Nelle tabelle Cerved il diritto può essere spezzato dalla lettura
+        // per coordinate in tre righe: NUDA / socio-quota-% / PROPRIETA'.
+        string previous = lineIndex > 0 ? Normalize(lines[lineIndex - 1]) : "";
+        string next = lineIndex + 1 < lines.Count
+            ? Normalize(lines[lineIndex + 1])
+            : "";
+
+        if (previous == "NUDA" && next.StartsWith("PROPRIETA"))
+            return "Nuda proprietà";
+        if (next.StartsWith("USUFRUTTO"))
+            return "Usufrutto";
+        if (next.StartsWith("SOCIOUNICO"))
+            return "Socio unico";
+        if (next.StartsWith("PROPRIETA"))
+            return "Proprietà";
+
+        return "";
     }
 
     private static ShareholderBlock BuildShareholderBlock(

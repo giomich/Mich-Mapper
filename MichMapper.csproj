@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>MichMapper</AssemblyName>
     <RootNamespace>MichMapper</RootNamespace>
-    <Version>3.18.0</Version>
+    <Version>3.19.0</Version>
     <Product>Mich Mapper</Product>
   </PropertyGroup>
 
