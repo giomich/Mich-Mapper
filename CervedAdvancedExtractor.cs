@@ -113,7 +113,7 @@ internal sealed class CervedAdvancedExtractor
         var rows = new List<ShareholderRow>();
 
         /*
-         * Regola fondamentale v3.19: SOCI viene letto per record logici.
+         * Regola fondamentale v3.20: SOCI viene letto per record logici.
          * Nei dossier Cerved la quota e la P.IVA di un socio-societa' sono
          * spesso su righe diverse; per le persone, invece, possono essere
          * sulla stessa riga. Ogni occorrenza quota-percentuale-diritto apre
@@ -575,7 +575,7 @@ internal sealed class CervedAdvancedExtractor
         return new ShareholderRow(
             record.SourceFile,
             CleanOwnerName(owner),
-            record.Denominazione.Value,
+            CervedNameResolver.GetDenominazione(record),
             fiscalCode.ToUpperInvariant(),
             record.CodiceFiscale.Value,
             percentage,

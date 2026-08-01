@@ -13,7 +13,7 @@ internal sealed class HtmlExporter
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Mich Mapper 3.19 - Verifica Cerved</title>
+<title>Mich Mapper 3.20 - Verifica Cerved</title>
 <style>
 body{font-family:Segoe UI,Arial,sans-serif;margin:32px;background:#f4f6f8;color:#1f2937}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:18px}
@@ -25,7 +25,7 @@ body{font-family:Segoe UI,Arial,sans-serif;margin:32px;background:#f4f6f8;color:
 </style>
 </head>
 <body>
-<h1>Mich Mapper 3.19</h1>
+<h1>Mich Mapper 3.20</h1>
 <p>Controllo della lettura specifica dei dossier Cerved.</p>
 <div class="grid">
 """);
@@ -41,7 +41,8 @@ body{font-family:Segoe UI,Arial,sans-serif;margin:32px;background:#f4f6f8;color:
 
             AddPlain(html, "Nome visualizzato", displayName);
             AddPlain(html, "ID univoco", uniqueId);
-            Add(html, "Denominazione / nominativo", record.Denominazione);
+            AddPlain(html, "Denominazione / nominativo",
+                CervedNameResolver.GetDenominazione(record));
             Add(html, "Partita IVA", record.PartitaIva);
             Add(html, "Codice fiscale", record.CodiceFiscale);
             Add(html, "Attività economica", record.AttivitaEconomica);
@@ -81,9 +82,10 @@ body{font-family:Segoe UI,Arial,sans-serif;margin:32px;background:#f4f6f8;color:
                 return name;
         }
 
-        return string.IsNullOrWhiteSpace(record.Denominazione.Value)
+        string resolved = CervedNameResolver.GetDenominazione(record);
+        return string.IsNullOrWhiteSpace(resolved)
             ? Path.GetFileNameWithoutExtension(record.SourceFile)
-            : record.Denominazione.Value;
+            : resolved;
     }
 
     private static void AddPlain(

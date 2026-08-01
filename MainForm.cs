@@ -4,7 +4,7 @@ namespace MichMapper;
 
 internal sealed class MainForm : Form
 {
-    private const string AppVersion = "3.19";
+    private const string AppVersion = "3.20";
 
     private readonly PdfFolderScanner _scanner = new();
     private readonly CervedPdfReader _reader = new();
@@ -190,7 +190,7 @@ internal sealed class MainForm : Form
 
                 ListViewItem item = _list.Items[i];
                 item.SubItems[1].Text = record.DocumentType.ToString();
-                item.SubItems[2].Text = record.Denominazione.Value;
+                item.SubItems[2].Text = CervedNameResolver.GetDenominazione(record);
                 item.SubItems[3].Text = record.PartitaIva.Value;
                 item.SubItems[4].Text = record.CodiceFiscale.Value;
                 item.SubItems[5].Text = record.BookmarkStatus;

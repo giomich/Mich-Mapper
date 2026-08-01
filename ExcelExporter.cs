@@ -67,7 +67,7 @@ internal sealed class ExcelExporter
 
             ws.Cell(row, 1).Value = record.SourceFile;
             ws.Cell(row, 2).Value = record.DocumentType.ToString();
-            ws.Cell(row, 3).Value = record.Denominazione.Value;
+            ws.Cell(row, 3).Value = CervedNameResolver.GetDenominazione(record);
             ws.Cell(row, 4).Value = record.Cognome.Value;
             ws.Cell(row, 5).Value = record.Nome.Value;
             ws.Cell(row, 6).Value = record.PartitaIva.Value;
@@ -190,9 +190,9 @@ internal sealed class ExcelExporter
             "Società",
             "ID società",
             "File origine",
-            "Totale quote %",
-            "Usufrutto %",
+            "Proprietà %",
             "Nuda proprietà %",
+            "Usufrutto %",
             "Totale rettificato %",
             "Esito quote",
             "Numero righe SOCI",
@@ -236,10 +236,11 @@ internal sealed class ExcelExporter
             decimal bareOwnership = companyRows
                 .Where(item => NormalizeText(item.RightType).Contains("NUDA PROPRIETA"))
                 .Sum(item => ParsePercentage(item.Percentage));
-            decimal fullOwnership = companyRows
-                .Where(item => NormalizeText(item.RightType) == "PROPRIETA")
-                .Sum(item => ParsePercentage(item.Percentage));
-            decimal adjusted = fullOwnership + bareOwnership - usufruct;
+            // Regola di controllo concordata: la colonna Proprietà comprende
+            // tutte le quote non classificate come nuda proprietà. In questo
+            // modo l'usufrutto viene esposto e poi sottratto una sola volta.
+            decimal ownership = gross - bareOwnership;
+            decimal adjusted = ownership + bareOwnership - usufruct;
 
             bool idPresent = !string.IsNullOrWhiteSpace(companyId);
             bool quotesOk = companyRows.Count > 0 &&
@@ -264,9 +265,9 @@ internal sealed class ExcelExporter
             ws.Cell(row, 1).Value = displayName;
             ws.Cell(row, 2).Value = companyId;
             ws.Cell(row, 3).Value = record.SourceFile;
-            ws.Cell(row, 4).Value = gross;
-            ws.Cell(row, 5).Value = usufruct;
-            ws.Cell(row, 6).Value = bareOwnership;
+            ws.Cell(row, 4).Value = ownership;
+            ws.Cell(row, 5).Value = bareOwnership;
+            ws.Cell(row, 6).Value = usufruct;
             ws.Cell(row, 7).Value = adjusted;
             ws.Cell(row, 8).Value = quotesOk ? "OK" : "ATTENZIONE";
             ws.Cell(row, 9).Value = companyRows.Count;
@@ -281,7 +282,7 @@ internal sealed class ExcelExporter
                     ? "Controllo quote superato."
                     : BuildDiagnosticEvidence(
                         companyRows,
-                        gross,
+                        ownership,
                         usufruct,
                         bareOwnership,
                         adjusted));
@@ -424,7 +425,8 @@ internal sealed class ExcelExporter
         foreach (CervedRecord record in records)
         {
             AddEvidence(ws, ref row, record.SourceFile,
-                "Denominazione", record.Denominazione);
+                "Denominazione", record.Denominazione,
+                CervedNameResolver.GetDenominazione(record));
 
             AddEvidence(ws, ref row, record.SourceFile,
                 "Cognome", record.Cognome);
@@ -524,11 +526,12 @@ internal sealed class ExcelExporter
         ref int row,
         string sourceFile,
         string fieldName,
-        ExtractedField field)
+        ExtractedField field,
+        string? valueOverride = null)
     {
         ws.Cell(row, 1).Value = sourceFile;
         ws.Cell(row, 2).Value = fieldName;
-        ws.Cell(row, 3).Value = Safe(field.Value);
+        ws.Cell(row, 3).Value = Safe(valueOverride ?? field.Value);
         ws.Cell(row, 4).Value = field.Page;
         ws.Cell(row, 5).Value = field.Confidence;
         ws.Cell(row, 6).Value = field.Method;
@@ -560,9 +563,10 @@ internal sealed class ExcelExporter
                 return fullName.Trim();
         }
 
-        return string.IsNullOrWhiteSpace(record.Denominazione.Value)
+        string resolved = CervedNameResolver.GetDenominazione(record);
+        return string.IsNullOrWhiteSpace(resolved)
             ? Path.GetFileNameWithoutExtension(record.SourceFile)
-            : record.Denominazione.Value.Trim();
+            : resolved;
     }
 
     private static string GetOwnerType(ShareholderRow item)
@@ -625,7 +629,7 @@ internal sealed class ExcelExporter
 
     private static string BuildDiagnosticEvidence(
         IReadOnlyList<ShareholderRow> rows,
-        decimal gross,
+        decimal ownership,
         decimal usufruct,
         decimal bareOwnership,
         decimal adjusted)
@@ -636,9 +640,9 @@ internal sealed class ExcelExporter
                 $"{item.Owner}: {item.Percentage}% - {item.RightType}"));
 
         return
-            $"Totale quote: {gross:0.##}%; " +
-            $"usufrutto: {usufruct:0.##}%; " +
+            $"Proprietà: {ownership:0.##}%; " +
             $"nuda proprietà: {bareOwnership:0.##}%; " +
+            $"usufrutto: {usufruct:0.##}%; " +
             $"totale rettificato: {adjusted:0.##}%. " +
             $"Righe: {detail}";
     }
